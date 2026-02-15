@@ -1,0 +1,41 @@
+# Webhook receiver for GitLab Copilot Reviewer
+#
+# A lightweight HTTP server that receives GitLab MR webhooks and
+# triggers the review pipeline via the GitLab Pipeline Trigger API.
+#
+# Build:
+#   docker build -f Dockerfile.webhook -t copilot-reviewer-webhook .
+#
+# Run:
+#   docker run -d --name copilot-reviewer-webhook \
+#     -p 3000:3000 \
+#     -e GITLAB_URL=https://gitlab.example.com \
+#     -e GITLAB_TOKEN=glpat-... \
+#     -e GITLAB_BOT_USERNAME=copilot-reviewer \
+#     -e GITLAB_WEBHOOK_SECRET=your-secret \
+#     -e GITLAB_TRIGGER_TOKEN=your-trigger-token \
+#     -e REVIEWER_PROJECT_ID=123 \
+#     copilot-reviewer-webhook
+
+FROM node:24-slim AS builder
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts --silent
+COPY tsconfig.json ./
+COPY src/ src/
+RUN npx esbuild src/server.ts \
+  --bundle \
+  --platform=node \
+  --target=node24 \
+  --outfile=dist/server.mjs \
+  --format=esm
+
+FROM node:24-slim
+
+WORKDIR /app
+COPY --from=builder /app/dist/server.mjs ./dist/
+EXPOSE 3000
+
+USER node
+CMD ["node", "dist/server.mjs"]

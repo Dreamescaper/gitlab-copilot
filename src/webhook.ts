@@ -1,9 +1,7 @@
-import { createHmac } from "node:crypto";
 import type {
   MergeRequestWebhookPayload,
   GitLabUser,
 } from "./types.js";
-import type { Config } from "./config.js";
 
 /**
  * Verify the GitLab webhook secret token.
@@ -11,9 +9,8 @@ import type { Config } from "./config.js";
  */
 export function verifyWebhookToken(
   headerToken: string | undefined,
-  secret: string | undefined,
+  secret: string,
 ): boolean {
-  if (!secret) return true; // no secret configured → skip verification
   return headerToken === secret;
 }
 
@@ -29,7 +26,7 @@ export function verifyWebhookToken(
  */
 export function shouldTriggerReview(
   payload: MergeRequestWebhookPayload,
-  config: Config,
+  botUsername: string,
 ): boolean {
   // Must be a merge_request event
   if (payload.object_kind !== "merge_request") {
@@ -52,7 +49,7 @@ export function shouldTriggerReview(
 
   // Check if the bot was added as reviewer
   const botUser = payload.reviewers?.find(
-    (r: GitLabUser) => r.username === config.gitlabBotUsername,
+    (r: GitLabUser) => r.username === botUsername,
   );
 
   if (!botUser) {

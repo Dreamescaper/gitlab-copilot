@@ -1,0 +1,61 @@
+# ─── GitLab Copilot Reviewer CI ──────────────────────────────────────────────
+#
+# This pipeline runs in the *reviewer* project and is triggered by the
+# webhook receiver via GitLab's Pipeline Trigger API.
+#
+# It receives MR metadata as pipeline variables (MR_PROJECT_ID, MR_IID, etc.),
+# clones the target project, runs a Copilot SDK review, and posts comments
+# back to the MR.
+#
+# Required CI/CD variables (set in Settings → CI/CD → Variables):
+#   GITLAB_URL          – GitLab instance URL
+#   GITLAB_TOKEN        – Access token with api scope (masked)
+#   GITLAB_BOT_USERNAME – Service account username
+#   GITHUB_TOKEN        – GitHub PAT with Copilot access (masked)
+#
+# Optional:
+#   COPILOT_MODEL       – Model override (default: gpt-4.1)
+
+stages:
+  - review
+
+copilot-review:
+  stage: review
+  image: node:24-slim
+
+  # Only run when triggered via the Pipeline Trigger API (not on push/MR)
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "trigger" && $MR_PROJECT_ID && $MR_IID
+      when: always
+    - when: never
+
+  variables:
+    # Pass through to the review script
+    GITLAB_URL: $GITLAB_URL
+    GITLAB_TOKEN: $GITLAB_TOKEN
+    GITLAB_BOT_USERNAME: $GITLAB_BOT_USERNAME
+    GITHUB_TOKEN: $GITHUB_TOKEN
+    COPILOT_MODEL: $COPILOT_MODEL
+    # These come from the pipeline trigger (set by webhook server)
+    MR_PROJECT_ID: $MR_PROJECT_ID
+    MR_IID: $MR_IID
+    MR_TITLE: $MR_TITLE
+    MR_DESCRIPTION: $MR_DESCRIPTION
+    MR_SOURCE_BRANCH: $MR_SOURCE_BRANCH
+    MR_TARGET_BRANCH: $MR_TARGET_BRANCH
+    MR_PROJECT_URL: $MR_PROJECT_URL
+    MR_HTTP_URL: $MR_HTTP_URL
+
+  before_script:
+    # Install git (needed to clone the target repo)
+    - apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1
+    # Install project dependencies
+    - npm ci --ignore-scripts --silent 2>&1 | tail -1
+
+  script:
+    - node dist/index.mjs
+
+  timeout: 30m
+
+  # Allow the job to fail without blocking other pipelines
+  allow_failure: true

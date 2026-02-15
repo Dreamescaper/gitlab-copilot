@@ -1,89 +1,75 @@
-import type {
-  APIGatewayProxyEventV2,
-  APIGatewayProxyResultV2,
-} from "aws-lambda";
+#!/usr/bin/env node
+
+/**
+ * CLI entrypoint for the GitLab Copilot Reviewer.
+ *
+ * Invoked by a GitLab CI pipeline trigger with MR metadata as pipeline variables:
+ *   MR_PROJECT_ID, MR_IID, MR_TITLE, MR_DESCRIPTION,
+ *   MR_SOURCE_BRANCH, MR_TARGET_BRANCH, MR_PROJECT_URL, MR_HTTP_URL
+ *
+ * The pipeline runs in the *reviewer* project, so this script clones the
+ * *target* project (where the MR lives) before running the review.
+ *
+ * Flow:
+ *   1. Load config from environment variables
+ *   2. Clone the target project's source branch
+ *   3. Fetch MR diffs from GitLab API
+ *   4. Run Copilot SDK review (with full repo on disk)
+ *   5. Post review comments back to GitLab MR
+ *   6. Clean up the clone
+ */
+
 import { loadConfig } from "./config.js";
-import { verifyWebhookToken, shouldTriggerReview } from "./webhook.js";
 import { GitLabClient } from "./gitlab-client.js";
 import { cloneRepository } from "./git.js";
 import { reviewMergeRequest } from "./reviewer.js";
-import type { MergeRequestWebhookPayload } from "./types.js";
 
-/**
- * AWS Lambda handler for GitLab MR webhook events.
- *
- * Triggered via Lambda Function URL.
- * Flow:
- *   1. Validate webhook token
- *   2. Parse payload & check if bot was added as reviewer
- *   3. Fetch MR diffs from GitLab API
- *   4. Shallow-clone the source branch
- *   5. Send diffs to Copilot SDK for review (with full repo on disk)
- *   6. Post review comments back to GitLab MR
- *   7. Clean up the clone
- */
-export async function handler(
-  event: APIGatewayProxyEventV2,
-): Promise<APIGatewayProxyResultV2> {
-  console.log("[lambda] Received event");
+function requireEnvVar(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    console.error(`[review] Missing required pipeline variable: ${name}`);
+    process.exit(1);
+  }
+  return value;
+}
+
+async function main(): Promise<void> {
+  console.log("[review] Starting Copilot code review…");
 
   // ─── Load config ────────────────────────────────────────────────────────
-  let config;
-  try {
-    config = loadConfig();
-  } catch (err) {
-    console.error("[lambda] Configuration error:", err);
-    return { statusCode: 500, body: "Server configuration error" };
-  }
+  const config = loadConfig();
 
-  // ─── Verify webhook token ──────────────────────────────────────────────
-  const webhookToken = event.headers?.["x-gitlab-token"];
-  if (!verifyWebhookToken(webhookToken, config.gitlabWebhookSecret)) {
-    console.warn("[lambda] Invalid webhook token");
-    return { statusCode: 401, body: "Unauthorized" };
-  }
-
-  // ─── Parse payload ────────────────────────────────────────────────────
-  let payload: MergeRequestWebhookPayload;
-  try {
-    payload = JSON.parse(event.body ?? "{}") as MergeRequestWebhookPayload;
-  } catch {
-    console.error("[lambda] Failed to parse request body");
-    return { statusCode: 400, body: "Invalid JSON" };
-  }
-
-  // ─── Check trigger conditions ─────────────────────────────────────────
-  if (!shouldTriggerReview(payload, config)) {
-    return {
-      statusCode: 200,
-      body: JSON.stringify({ message: "Event ignored – review not triggered" }),
-    };
-  }
-
-  const projectId = payload.project.id;
-  const mrIid = payload.object_attributes.iid;
-  const mrTitle = payload.object_attributes.title;
-  const mrDescription = payload.object_attributes.description;
-  const mrUrl = payload.object_attributes.url;
-  const sourceBranch = payload.object_attributes.source_branch;
-  const targetBranch = payload.object_attributes.target_branch;
-  const gitHttpUrl = payload.project.http_url;
+  // ─── Read MR info from pipeline trigger variables ───────────────────────
+  const projectId = Number(requireEnvVar("MR_PROJECT_ID"));
+  const mrIid = Number(requireEnvVar("MR_IID"));
+  const mrTitle = requireEnvVar("MR_TITLE");
+  const mrDescription = process.env["MR_DESCRIPTION"] ?? "";
+  const sourceBranch = requireEnvVar("MR_SOURCE_BRANCH");
+  const targetBranch = requireEnvVar("MR_TARGET_BRANCH");
+  const projectUrl = requireEnvVar("MR_PROJECT_URL");
+  const httpUrl = requireEnvVar("MR_HTTP_URL");
+  const mrUrl = `${projectUrl}/-/merge_requests/${mrIid}`;
 
   console.log(
-    `[lambda] Starting review for MR !${mrIid} in project ${projectId} ` +
-    `(${payload.project.path_with_namespace}) ` +
-    `[${sourceBranch} → ${targetBranch}]`,
+    `[review] MR !${mrIid} in project ${projectId}: ${mrTitle}\n` +
+    `[review] ${sourceBranch} → ${targetBranch}`,
   );
 
   const gitlab = new GitLabClient(config);
-  let clone: Awaited<ReturnType<typeof cloneRepository>> | undefined;
+  let cleanup: (() => Promise<void>) | undefined;
 
   try {
+    // ─── Clone the target project ────────────────────────────────────────
+    console.log("[review] Cloning target repository…");
+    const clone = await cloneRepository(httpUrl, sourceBranch, config.gitlabToken);
+    cleanup = clone.cleanup;
+    console.log(`[review] Cloned to ${clone.dir}`);
+
     // ─── Fetch diffs ─────────────────────────────────────────────────────
-    console.log("[lambda] Fetching MR diffs…");
+    console.log("[review] Fetching MR diffs…");
     const diffVersion = await gitlab.getLatestDiffs(projectId, mrIid);
     console.log(
-      `[lambda] Got ${diffVersion.diffs.length} changed file(s), ` +
+      `[review] Got ${diffVersion.diffs.length} changed file(s), ` +
       `version ${diffVersion.id}`,
     );
 
@@ -93,19 +79,12 @@ export async function handler(
         mrIid,
         "🤖 **Copilot Review**: No file changes detected in this MR.",
       );
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ message: "No diffs to review" }),
-      };
+      console.log("[review] No diffs to review.");
+      return;
     }
 
-    // ─── Clone the repository ────────────────────────────────────────────
-    console.log("[lambda] Cloning repository…");
-    clone = await cloneRepository(gitHttpUrl, sourceBranch, config.gitlabToken);
-    console.log(`[lambda] Cloned to ${clone.dir}`);
-
-    // ─── Run review (Copilot has full repo on disk) ──────────────────────
-    console.log("[lambda] Running Copilot review (with full repo clone)…");
+    // ─── Run review ────────────────────────────────────────────────────
+    console.log("[review] Running Copilot review…");
     const review = await reviewMergeRequest({
       config,
       repoDir: clone.dir,
@@ -117,11 +96,11 @@ export async function handler(
       diffVersion,
     });
     console.log(
-      `[lambda] Review complete: ${review.comments.length} comment(s)`,
+      `[review] Review complete: ${review.comments.length} comment(s)`,
     );
 
     // ─── Post results ────────────────────────────────────────────────────
-    console.log("[lambda] Posting review to GitLab…");
+    console.log("[review] Posting review to GitLab…");
 
     const summaryBody =
       `## 🤖 Copilot Code Review\n\n` +
@@ -138,48 +117,37 @@ export async function handler(
     );
 
     console.log(
-      `[lambda] Done: ${posted} comment(s) posted, ${failed} failed`,
+      `[review] Done: ${posted} comment(s) posted, ${failed} failed`,
     );
 
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        message: "Review posted",
-        comments: review.comments.length,
-        posted,
-        failed,
-      }),
-    };
+    if (failed > 0) {
+      process.exitCode = 1;
+    }
   } catch (err) {
-    console.error("[lambda] Review failed:", err);
+    console.error("[review] Review failed:", err);
 
-    // Attempt to notify the MR that review failed
+    // Attempt to notify the MR
     try {
       await gitlab.postMergeRequestNote(
         projectId,
         mrIid,
-        `🤖 **Copilot Review**: Review failed with an error. Please check the Lambda logs.\n\n` +
+        `🤖 **Copilot Review**: Review failed with an error. Check the CI job log.\n\n` +
         `\`\`\`\n${err instanceof Error ? err.message : String(err)}\n\`\`\``,
       );
     } catch {
-      // ignore notification failure
+      // ignore
     }
 
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        message: "Review failed",
-        error: err instanceof Error ? err.message : String(err),
-      }),
-    };
+    process.exitCode = 1;
   } finally {
-    // Always clean up the clone
-    if (clone) {
+    if (cleanup) {
       try {
-        await clone.cleanup();
+        await cleanup();
       } catch (cleanupErr) {
-        console.warn("[lambda] Clone cleanup failed:", cleanupErr);
+        console.warn("[review] Clone cleanup failed:", cleanupErr);
       }
     }
   }
 }
+
+main();

@@ -1,11 +1,6 @@
 node_modules/
 dist/
-lambda.zip
 *.js
 *.d.ts
 *.js.map
 .env
-infra/layers/
-infra/.terraform/
-infra/*.tfstate*
-infra/.terraform.lock.hcl

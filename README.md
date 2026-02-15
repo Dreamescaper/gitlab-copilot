@@ -1,243 +1,220 @@
 # GitLab Copilot Reviewer
 
-Automated code review for GitLab Merge Requests powered by **GitHub Copilot SDK**, running on **AWS Lambda**.
+Automated code review for GitLab Merge Requests powered by **GitHub Copilot SDK**, running on **GitLab CI**.
 
 ## How It Works
 
 ```
-┌─────────────┐      Webhook       ┌──────────────────┐
-│   GitLab    │ ─── MR event ────▶ │   AWS Lambda     │
-│  (MR hook)  │                    │  (Function URL)  │
-└─────────────┘                    └────────┬─────────┘
-                                            │
-                                   1. Validate webhook
-                                   2. Check: bot added as reviewer?
-                                            │
-                              ┌─────────────┼──────────────┐
-                              │             │              │
-                              ▼             ▼              ▼
-                    ┌────────────┐  ┌──────────────┐  ┌──────────────┐
-                    │ GitLab API │  │  Git clone   │  │ Copilot SDK  │
-                    │ Fetch diff │  │  (shallow)   │  │ Review code  │
-                    │  metadata  │  │  to /tmp     │  │ workingDir   │
-                    └────────────┘  └──────────────┘  └──────────────┘
-                              │                            │
-                              └─────────────┬──────────────┘
-                                            │
-                                            ▼
-                                   Post inline comments
-                                   + summary note on MR
+┌─────────────┐    Webhook    ┌───────────────────┐   Trigger API   ┌────────────────────┐
+│   GitLab    │──── POST ────▶│  Webhook Receiver  │──── POST ─────▶│  Reviewer Project  │
+│  (MR hook)  │               │  (Docker container)│                │  (GitLab CI job)   │
+└─────────────┘               └───────────────────┘                └─────────┬──────────┘
+                                                                              │
+                                                                    1. Clone target repo
+                                                                    2. Fetch diff metadata
+                                                                    3. Copilot SDK review
+                                                                    4. Post comments to MR
 ```
 
 ### Trigger Flow
 
-1. A user adds a **service account** (e.g. `copilot-reviewer`) as a reviewer on a Merge Request.
-2. GitLab fires a **Merge Request webhook** to the Lambda Function URL.
-3. The Lambda validates the webhook token, checks that the bot was *newly added* as a reviewer, and that the MR is not a draft.
-4. It fetches the MR diff metadata via the **GitLab REST API** (`/versions` endpoint) – this provides the list of changed files, SHAs, and line mappings needed for posting inline comments.
-5. A **shallow git clone** (`--depth 1 --single-branch`) of the source branch is performed into Lambda's `/tmp` ephemeral storage. This gives Copilot full source context – matching how GitHub Copilot Code Review works.
-6. The Copilot SDK session is created with `workingDirectory` set to the cloned repo. The SDK's built-in **Read**, **Bash**, and **Grep** tools give Copilot full filesystem access to explore the codebase.
-7. Copilot returns structured JSON with inline comments (file, line, severity, body).
-8. Comments are posted back as **inline diff discussions** on the MR. A summary note is also posted.
-9. The clone directory is cleaned up.
+1. A user adds a **service account** (e.g. `copilot-reviewer`) as a reviewer on a Merge Request in any target project.
+2. GitLab fires a **Merge Request webhook** to the webhook receiver.
+3. The receiver validates the token, checks that the bot was *newly added* as a reviewer, and that the MR is not a draft.
+4. The receiver triggers a **CI pipeline** in the reviewer project via the [Pipeline Trigger API](https://docs.gitlab.com/ee/ci/triggers/), passing MR metadata (project ID, MR IID, branches, etc.) as pipeline variables.
+5. The CI job starts on your existing GitLab runner:
+   - **Clones the target project** (`--depth 1 --single-branch`) to get full source context
+   - Fetches MR diff metadata via the GitLab API (SHAs, line mappings for inline comments)
+   - Creates a **Copilot SDK session** with `workingDirectory` pointed at the cloned repo
+   - Copilot explores the codebase using built-in Read/Bash/Grep tools and returns structured JSON
+6. Comments are posted back as **inline diff discussions** on the MR. A summary note is also posted.
 
-## Why Git Clone?
+### Two Components
 
-Diffs alone aren't enough for meaningful code review. Copilot needs full source context – surrounding code, imported modules, type definitions, config files, etc. A shallow clone is the simplest and most efficient way to provide this:
-
-- **One operation** vs N API calls to browse files
-- **SDK built-in tools** (Read, Bash, Grep) work natively with `workingDirectory` – no custom tool wiring needed
-- **Git-native context**: `git diff`, `git log`, `git blame` available via the SDK's Bash tool
-- **Matches GitHub Copilot Code Review** behavior – it also clones repos for full context
-
-The clone is shallow (`--depth 1 --single-branch`) to minimize time and disk usage.
-
-## Why Copilot SDK (not CLI)?
-
-| Feature | CLI (`/review`) | SDK |
+| Component | What | Where it runs |
 |---|---|---|
-| Headless / programmatic | ❌ TUI-only | ✅ Supported |
-| Custom system prompts | ❌ | ✅ `systemMessage` |
-| Structured JSON output | ❌ | ✅ via prompt engineering |
-| Auth via token | ❌ interactive login | ✅ `githubToken` option |
-| Lambda-compatible | ❌ | ✅ |
+| **Webhook receiver** (`src/server.ts`) | Lightweight HTTP server — validates webhooks, triggers pipelines | Docker container (on runner host, k8s, anywhere) |
+| **Review job** (`src/index.ts`) | Clones target repo, runs Copilot review, posts comments | GitLab CI pipeline on your existing runner |
 
-The `/review` command is CLI-only (TUI) and not available in the SDK. However, the SDK lets us create a session with the same review behavior, plus structured output that we can parse and post as inline comments.
+## Why GitLab CI (not Lambda)?
+
+| Factor | AWS Lambda | GitLab CI |
+|---|---|---|
+| New infrastructure | Function URL, IAM, layers, Terraform | None — reuse existing runner |
+| Git | Needs Lambda layer | Already available |
+| Node.js 24 | Runtime supported, SDK needs layer | Docker image `node:24-slim` |
+| Secrets | AWS Secrets Manager | GitLab CI/CD variables |
+| Timeout | 15 min max | No hard limit |
+| Disk space | 10 GB max ephemeral | Full runner disk |
+| Cold starts | Yes | No |
+| Complexity | High | Low |
 
 ## Prerequisites
 
-- **Node.js 24+** (Lambda runtime `nodejs24.x`)
-- **Docker** – used to build Lambda layers for the correct platform (Amazon Linux 2023 / x86_64)
+- **GitLab runner** (shared or project-specific)
+- **Docker** — for running the webhook receiver and the CI job image
+- **Node.js 24+** — used in the CI job image (`node:24-slim`)
 - **GitHub account** with Copilot access + a Personal Access Token
-- **GitLab instance** with a project access token or PAT with `api` scope
-- **GitLab service account** (the "bot" user that triggers reviews)
-- **Terraform** (for infrastructure deployment)
+- **GitLab access token** with `api` scope (for API calls and cloning target repos)
+- **GitLab service account** — the "bot" user that triggers reviews
 
 ## Project Structure
 
 ```
 ├── src/
-│   ├── index.ts          # Lambda handler entry point
+│   ├── index.ts          # CLI entrypoint (runs in CI job)
+│   ├── server.ts         # Webhook receiver (runs as Docker container)
 │   ├── config.ts         # Environment variable loader
 │   ├── types.ts          # TypeScript types (webhook, API, review)
 │   ├── webhook.ts        # Webhook validation & trigger logic
 │   ├── gitlab-client.ts  # GitLab REST API client (diffs + comments)
 │   ├── git.ts            # Git clone helper (shallow clone + cleanup)
 │   └── reviewer.ts       # Copilot SDK integration (workingDirectory)
-├── infra/
-│   ├── main.tf           # Terraform config (Lambda + layers + Function URL)
-│   ├── scripts/
-│   │   ├── build-git-layer.sh      # Builds git Lambda layer via Docker
-│   │   └── build-copilot-layer.sh  # Builds Copilot SDK Lambda layer via Docker
-│   └── terraform.tfvars.example
+├── .gitlab-ci.yml        # CI pipeline for the review job
+├── Dockerfile.webhook    # Docker image for the webhook receiver
 ├── package.json
 └── tsconfig.json
 ```
 
 ## Setup
 
-### 1. Install Dependencies
+### 1. Create the Reviewer Project
+
+Create a new GitLab project (e.g. `infra/copilot-reviewer`) and push this code to it. This is the project whose CI pipeline will run the reviews.
+
+### 2. Install Dependencies & Build
 
 ```bash
 npm install
+npm run build:all
 ```
 
-### 2. Build
+This produces:
+- `dist/index.mjs` — review CLI (used by the CI job)
+- `dist/server.mjs` — webhook receiver
+
+Commit `dist/` to the repo so the CI job can use it directly without a build step. Or add a build stage to the CI pipeline.
+
+### 3. Create a Pipeline Trigger Token
+
+In the reviewer project:
+1. Go to **Settings → CI/CD → Pipeline trigger tokens**
+2. Create a new trigger token
+3. Save the token — you'll need it for the webhook receiver
+
+### 4. Configure CI/CD Variables
+
+In the reviewer project, go to **Settings → CI/CD → Variables** and add:
+
+| Variable | Type | Protected | Masked | Value |
+|---|---|---|---|---|
+| `GITLAB_URL` | Variable | No | No | `https://gitlab.example.com` |
+| `GITLAB_TOKEN` | Variable | No | ✅ | GitLab access token with `api` scope |
+| `GITLAB_BOT_USERNAME` | Variable | No | No | `copilot-reviewer` |
+| `GITHUB_TOKEN` | Variable | No | ✅ | GitHub PAT with Copilot access |
+| `COPILOT_MODEL` | Variable | No | No | `gpt-4.1` (optional) |
+
+### 5. Deploy the Webhook Receiver
+
+Build and run the Docker container:
 
 ```bash
-npm run build
+# Build
+docker build -f Dockerfile.webhook -t copilot-reviewer-webhook .
+
+# Run
+docker run -d --name copilot-reviewer-webhook \
+  -p 3000:3000 \
+  -e GITLAB_URL=https://gitlab.example.com \
+  -e GITLAB_TOKEN=glpat-... \
+  -e GITLAB_BOT_USERNAME=copilot-reviewer \
+  -e GITLAB_WEBHOOK_SECRET=your-webhook-secret \
+  -e GITLAB_TRIGGER_TOKEN=your-trigger-token \
+  -e REVIEWER_PROJECT_ID=123 \
+  copilot-reviewer-webhook
 ```
 
-This uses esbuild to bundle the TypeScript into a single `dist/index.mjs`.
+The receiver exposes:
+- `POST /webhook` — GitLab webhook endpoint
+- `GET /health` — health check
 
-### 3. Package for Lambda
+### 6. Configure GitLab Webhooks
 
-```bash
-npm run package
-```
-
-Creates `lambda.zip` ready for deployment. Note that `@github/copilot-sdk` is marked as external in the esbuild config – you need to include the SDK and the **Copilot CLI binary** in a Lambda layer or bundle them into the zip.
-
-### 4. Lambda Layers
-
-Both required Lambda layers are **built automatically** by Terraform via Docker. On the first `terraform apply`, Terraform runs build scripts that:
-
-1. **Git layer** – spins up an Amazon Linux 2023 container, installs git, and packages the binary + shared libraries
-2. **Copilot SDK layer** – spins up a Node.js 24 container, installs `@github/copilot-sdk`, and packages it in the Lambda `nodejs/` layer structure
-
-No manual layer management needed. Docker must be running.
-
-> **Pre-existing layers**: If you already have published layers, set `copilot_cli_layer_arn` and/or `git_layer_arn` in your Terraform vars to skip the Docker builds.
-
-> **Rebuilding layers**: Delete the zips in `infra/layers/` and re-apply, or change the build scripts (the `null_resource` triggers on script hash).
-
-### 5. Deploy Infrastructure
-
-```bash
-cd infra
-
-# Copy and fill in your values
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your actual values
-
-terraform init
-terraform apply
-```
-
-This creates:
-- IAM role with basic Lambda execution permissions
-- Git and Copilot SDK Lambda layers (built via Docker on first run)
-- Lambda function (10 min timeout, 1 GB RAM, 2 GB ephemeral storage)
-- Lambda Function URL (public, secured by webhook secret)
-
-The output includes the **Function URL** to use as the webhook endpoint.
-
-### 6. Configure GitLab Webhook
-
-1. Go to your GitLab project → **Settings → Webhooks**
-2. **URL**: paste the Lambda Function URL from Terraform output
-3. **Secret token**: the value you set for `GITLAB_WEBHOOK_SECRET`
+In each target project you want to review:
+1. Go to **Settings → Webhooks**
+2. **URL**: `http://<webhook-receiver-host>:3000/webhook`
+3. **Secret token**: same value as `GITLAB_WEBHOOK_SECRET`
 4. **Trigger**: check **Merge request events**
 5. Save
 
 ### 7. Trigger a Review
 
-1. Open or update a Merge Request
+1. Open or update a Merge Request in a target project
 2. Add the bot user (e.g. `copilot-reviewer`) as a **Reviewer**
-3. The Lambda will be triggered, clone the repo, run the review, and post comments
+3. The webhook fires → receiver triggers the pipeline → CI job reviews and posts comments
 
 ## Environment Variables
 
+### Review Job (CI/CD Variables)
+
 | Variable | Required | Description |
 |---|---|---|
-| `GITLAB_URL` | ✅ | GitLab instance URL (e.g. `https://gitlab.example.com`) |
-| `GITLAB_TOKEN` | ✅ | GitLab access token with `api` scope (also used for git clone auth) |
-| `GITLAB_BOT_USERNAME` | ✅ | Username of the service account that triggers reviews |
+| `GITLAB_URL` | ✅ | GitLab instance URL |
+| `GITLAB_TOKEN` | ✅ | Access token with `api` scope (also used for cloning) |
+| `GITLAB_BOT_USERNAME` | ✅ | Service account username |
 | `GITHUB_TOKEN` | ✅ | GitHub PAT with Copilot access |
-| `GITLAB_WEBHOOK_SECRET` | | Webhook secret for payload verification |
 | `COPILOT_MODEL` | | Model to use (default: `gpt-4.1`) |
 | `LOG_LEVEL` | | Logging level (default: `info`) |
 
+### Webhook Receiver (Docker env)
+
+| Variable | Required | Description |
+|---|---|---|
+| `GITLAB_URL` | ✅ | GitLab instance URL |
+| `GITLAB_TOKEN` | ✅ | Access token with `api` scope |
+| `GITLAB_BOT_USERNAME` | ✅ | Service account username |
+| `GITLAB_WEBHOOK_SECRET` | ✅ | Webhook secret for payload verification |
+| `GITLAB_TRIGGER_TOKEN` | ✅ | Pipeline trigger token for the reviewer project |
+| `REVIEWER_PROJECT_ID` | ✅ | GitLab project ID of the reviewer project |
+| `REVIEWER_PROJECT_REF` | | Git ref to trigger (default: `main`) |
+| `WEBHOOK_PORT` | | Port to listen on (default: `3000`) |
+
 ## How Comments Are Posted
 
-- **Inline diff discussions**: Each review finding is posted as a discussion on the specific file and line in the MR diff. The comment includes a severity indicator (🔴 critical, 🟡 warning, ℹ️ info).
-- **Summary note**: A general MR note with the overall assessment and comment count.
+- **Inline diff discussions**: Each finding is posted on the specific file and line. Includes severity indicator (🔴 critical, 🟡 warning, ℹ️ info).
+- **Summary note**: Overall assessment with comment count.
 - **Fallback**: If an inline comment fails (e.g. line not in diff), it falls back to a regular MR note.
-
-## Resource Considerations
-
-| Resource | Config | Rationale |
-|---|---|---|
-| Timeout | 600s (10 min) | Clone + Copilot review can take several minutes for large repos |
-| Memory | 1024 MB | Copilot SDK + git operations |
-| Ephemeral Storage | 2048 MB (2 GB) | Shallow clone of the repository |
-
-For very large repositories, consider increasing ephemeral storage (up to 10 GB) or adjusting the clone depth.
-
-## Local Development
-
-Create a `.env` file:
-```bash
-GITLAB_URL=https://gitlab.example.com
-GITLAB_TOKEN=glpat-...
-GITLAB_BOT_USERNAME=copilot-reviewer
-GITHUB_TOKEN=ghp_...
-# GITLAB_WEBHOOK_SECRET=optional
-# COPILOT_MODEL=gpt-4.1
-```
-
-You can test the handler locally by invoking it with a sample webhook payload.
 
 ## Troubleshooting
 
 | Issue | Cause | Fix |
 |---|---|---|
-| `git: not found` in Lambda logs | Git layer missing or not attached | Check `layers` in Lambda config; ensure Docker build ran |
-| `GIT_EXEC_PATH` errors | Git can't find helpers (git-remote-https) | Verify `GIT_EXEC_PATH=/opt/libexec/git-core` env var is set |
-| `Cannot find module '@github/copilot-sdk'` | SDK layer missing | Check Copilot SDK layer; ensure `nodejs/node_modules/` structure |
-| Lambda times out | Large repo or slow Copilot response | Increase `timeout` (max 900s) and `memory_size` |
-| `ENOSPACE` during clone | Repo too large for ephemeral storage | Increase `ephemeral_storage` (max 10240 MB) |
-| No comments posted | Copilot returned unparseable response | Check CloudWatch logs for raw Copilot output; adjust system prompt |
-| Webhook not triggering | Wrong event type or bot not in reviewers | Verify webhook is set to "Merge request events" and bot username matches `GITLAB_BOT_USERNAME` |
-| 401 on git clone | Token lacks repo access | Ensure `GITLAB_TOKEN` has `read_repository` scope (included in `api`) |
-| Inline comment fails, falls back to note | Line not present in MR diff | Expected for lines outside the diff context; review posted as regular note instead |
+| Webhook receiver returns 401 | Wrong webhook secret | Ensure `GITLAB_WEBHOOK_SECRET` matches in both webhook config and receiver |
+| Pipeline not triggered | Trigger token invalid or wrong project ID | Verify `GITLAB_TRIGGER_TOKEN` and `REVIEWER_PROJECT_ID` |
+| CI job: `Cannot find module '@github/copilot-sdk'` | SDK not installed | Add `npm ci` to `before_script` or commit `node_modules` |
+| CI job: git clone fails | Token lacks access to target project | Ensure `GITLAB_TOKEN` has `api` scope and access to target projects |
+| No comments posted | Copilot returned unparseable response | Check CI job log for raw Copilot output; adjust system prompt |
+| Webhook not triggering | Wrong event type or bot not in reviewers | Verify webhook is set to "Merge request events"; check bot username |
+| Inline comment fails | Line not present in MR diff | Expected — falls back to a regular MR note |
 
 ### Checking Logs
 
 ```bash
-# Tail Lambda logs (replace function name and region if different)
-aws logs tail /aws/lambda/gitlab-copilot-reviewer --follow --region eu-central-1
+# Webhook receiver logs
+docker logs copilot-reviewer-webhook -f
+
+# CI job logs
+# → Go to the reviewer project → CI/CD → Pipelines → select the triggered pipeline
 ```
 
 ## Architecture Decisions
 
 | Decision | Rationale |
 |---|---|
-| **Copilot SDK over CLI** | CLI `/review` is TUI-only; SDK supports headless use, token auth, custom prompts, structured output |
-| **Git clone over API browsing** | One shallow clone vs N HTTP calls; SDK built-in tools (Read/Bash/Grep) work with local filesystem; matches GitHub Copilot Code Review |
-| **Shallow clone (`--depth 1`)** | Minimizes time and disk; Copilot rarely needs full history |
-| **Lambda + Function URL** | Simplest serverless webhook handler; no API Gateway needed |
-| **Docker-based layer builds** | Produces correct binaries for Amazon Linux 2023 / x86_64 regardless of dev machine |
-| **esbuild with SDK as external** | SDK is in a Lambda layer (with native deps); esbuild bundles only our code |
-| **Diff metadata from API** | SHAs and line mappings are needed for GitLab's `position` object when posting inline discussions; not available from the cloned repo alone |
+| **GitLab CI over Lambda** | Reuses existing runner; no new infrastructure; no timeout/disk/cold-start constraints |
+| **Separate webhook receiver** | GitLab webhooks can't trigger cross-project pipelines directly; the receiver translates webhook → Pipeline Trigger API |
+| **Pipeline Trigger API** | Native GitLab mechanism for triggering pipelines with custom variables; no custom CI bridge needed |
+| **Copilot SDK over CLI** | CLI `/review` is TUI-only; SDK supports headless use, token auth, structured output |
+| **Shallow clone** | Minimizes time and disk; Copilot rarely needs full history |
+| **Diff metadata from API** | SHAs and line mappings needed for GitLab's `position` object when posting inline discussions |
 

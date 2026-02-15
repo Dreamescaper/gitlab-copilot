@@ -1,18 +1,23 @@
 {
   "name": "gitlab-copilot",
-  "version": "1.0.0",
-  "description": "GitLab MR code review using GitHub Copilot SDK on AWS Lambda",
+  "version": "2.0.0",
+  "description": "GitLab MR code review using GitHub Copilot SDK on GitLab CI",
   "type": "module",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --target=node24 --outfile=dist/index.mjs --format=esm --external:@github/copilot-sdk",
-    "package": "npm run build && cd dist && zip -r ../lambda.zip .",
+    "build:server": "esbuild src/server.ts --bundle --platform=node --target=node24 --outfile=dist/server.mjs --format=esm",
+    "build:all": "npm run build && npm run build:server",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": ["gitlab", "copilot", "code-review", "lambda"],
+  "keywords": [
+    "gitlab",
+    "copilot",
+    "code-review",
+    "ci"
+  ],
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "@types/aws-lambda": "^8.10.160",
     "@types/node": "^25.2.3",
     "esbuild": "^0.27.3",
     "typescript": "^5.9.3"
