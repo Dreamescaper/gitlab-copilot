@@ -1,0 +1,113 @@
+{
+  "object_kind": "merge_request",
+  "event_type": "merge_request",
+  "user": {
+    "id": 1,
+    "name": "John Doe",
+    "username": "johndoe",
+    "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/1/avatar.png",
+    "email": "john@example.com"
+  },
+  "project": {
+    "id": 42,
+    "name": "my-project",
+    "description": "A sample project",
+    "web_url": "https://gitlab.example.com/my-group/my-project",
+    "git_ssh_url": "git@gitlab.example.com:my-group/my-project.git",
+    "git_http_url": "https://gitlab.example.com/my-group/my-project.git",
+    "namespace": "my-group",
+    "visibility_level": 20,
+    "path_with_namespace": "my-group/my-project",
+    "default_branch": "main",
+    "homepage": "https://gitlab.example.com/my-group/my-project",
+    "url": "git@gitlab.example.com:my-group/my-project.git",
+    "ssh_url": "git@gitlab.example.com:my-group/my-project.git",
+    "http_url": "https://gitlab.example.com/my-group/my-project.git"
+  },
+  "object_attributes": {
+    "id": 100,
+    "iid": 7,
+    "target_branch": "main",
+    "source_branch": "feature/add-auth",
+    "source_project_id": 42,
+    "target_project_id": 42,
+    "author_id": 1,
+    "assignee_id": null,
+    "assignee_ids": [],
+    "reviewer_ids": [1, 99],
+    "title": "Add authentication middleware",
+    "description": "Implements JWT-based authentication for the API.\n\n- Adds auth middleware\n- Updates routes to require auth\n- Adds token refresh endpoint",
+    "state": "opened",
+    "action": "update",
+    "draft": false,
+    "work_in_progress": false,
+    "merge_status": "can_be_merged",
+    "detailed_merge_status": "mergeable",
+    "url": "https://gitlab.example.com/my-group/my-project/-/merge_requests/7",
+    "last_commit": {
+      "id": "abc123def456",
+      "message": "Add token refresh endpoint",
+      "title": "Add token refresh endpoint",
+      "timestamp": "2026-02-15T14:30:00Z",
+      "url": "https://gitlab.example.com/my-group/my-project/-/commit/abc123def456",
+      "author": {
+        "name": "John Doe",
+        "email": "john@example.com"
+      }
+    },
+    "source": {
+      "id": 42,
+      "name": "my-project",
+      "description": "A sample project",
+      "web_url": "https://gitlab.example.com/my-group/my-project",
+      "git_ssh_url": "git@gitlab.example.com:my-group/my-project.git",
+      "git_http_url": "https://gitlab.example.com/my-group/my-project.git",
+      "namespace": "my-group",
+      "visibility_level": 20,
+      "path_with_namespace": "my-group/my-project",
+      "default_branch": "main",
+      "homepage": "https://gitlab.example.com/my-group/my-project",
+      "url": "git@gitlab.example.com:my-group/my-project.git",
+      "ssh_url": "git@gitlab.example.com:my-group/my-project.git",
+      "http_url": "https://gitlab.example.com/my-group/my-project.git"
+    },
+    "target": {
+      "id": 42,
+      "name": "my-project",
+      "description": "A sample project",
+      "web_url": "https://gitlab.example.com/my-group/my-project",
+      "git_ssh_url": "git@gitlab.example.com:my-group/my-project.git",
+      "git_http_url": "https://gitlab.example.com/my-group/my-project.git",
+      "namespace": "my-group",
+      "visibility_level": 20,
+      "path_with_namespace": "my-group/my-project",
+      "default_branch": "main",
+      "homepage": "https://gitlab.example.com/my-group/my-project",
+      "url": "git@gitlab.example.com:my-group/my-project.git",
+      "ssh_url": "git@gitlab.example.com:my-group/my-project.git",
+      "http_url": "https://gitlab.example.com/my-group/my-project.git"
+    },
+    "created_at": "2026-02-14T10:00:00Z",
+    "updated_at": "2026-02-16T09:15:00Z"
+  },
+  "reviewers": [
+    {
+      "id": 1,
+      "name": "John Doe",
+      "username": "johndoe",
+      "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/1/avatar.png"
+    },
+    {
+      "id": 99,
+      "name": "Copilot Reviewer",
+      "username": "copilot-reviewer",
+      "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/99/avatar.png"
+    }
+  ],
+  "changes": {
+    "reviewer_ids": {
+      "previous": [1],
+      "current": [1, 99]
+    }
+  }
+}
