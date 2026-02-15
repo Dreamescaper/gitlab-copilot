@@ -1,0 +1,7 @@
+node_modules/
+dist/
+lambda.zip
+*.js
+*.d.ts
+*.js.map
+.env

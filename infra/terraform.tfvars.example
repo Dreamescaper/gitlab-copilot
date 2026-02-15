@@ -1,0 +1,6 @@
+# Auto-generated – override in terraform.tfvars
+gitlab_url          = "https://gitlab.example.com"
+gitlab_bot_username = "copilot-reviewer"
+# gitlab_token        = "glpat-..."    # set via TF_VAR_gitlab_token
+# github_token        = "ghp_..."      # set via TF_VAR_github_token
+# gitlab_webhook_secret = "..."        # set via TF_VAR_gitlab_webhook_secret
