@@ -5,3 +5,7 @@ lambda.zip
 *.d.ts
 *.js.map
 .env
+infra/layers/
+infra/.terraform/
+infra/*.tfstate*
+infra/.terraform.lock.hcl

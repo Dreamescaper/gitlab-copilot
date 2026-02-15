@@ -67,11 +67,10 @@ The `/review` command is CLI-only (TUI) and not available in the SDK. However, t
 ## Prerequisites
 
 - **Node.js 24+** (Lambda runtime `nodejs24.x`)
+- **Docker** – used to build Lambda layers for the correct platform (Amazon Linux 2023 / x86_64)
 - **GitHub account** with Copilot access + a Personal Access Token
 - **GitLab instance** with a project access token or PAT with `api` scope
 - **GitLab service account** (the "bot" user that triggers reviews)
-- **Copilot CLI** binary – the SDK communicates with it in server mode (Lambda layer)
-- **Git** – available in Lambda environment (Lambda layer)
 - **Terraform** (for infrastructure deployment)
 
 ## Project Structure
@@ -86,7 +85,10 @@ The `/review` command is CLI-only (TUI) and not available in the SDK. However, t
 │   ├── git.ts            # Git clone helper (shallow clone + cleanup)
 │   └── reviewer.ts       # Copilot SDK integration (workingDirectory)
 ├── infra/
-│   ├── main.tf           # Terraform config (Lambda + Function URL)
+│   ├── main.tf           # Terraform config (Lambda + layers + Function URL)
+│   ├── scripts/
+│   │   ├── build-git-layer.sh      # Builds git Lambda layer via Docker
+│   │   └── build-copilot-layer.sh  # Builds Copilot SDK Lambda layer via Docker
 │   └── terraform.tfvars.example
 ├── package.json
 └── tsconfig.json
@@ -118,38 +120,16 @@ Creates `lambda.zip` ready for deployment. Note that `@github/copilot-sdk` is ma
 
 ### 4. Lambda Layers
 
-The Lambda function requires two layers:
+Both required Lambda layers are **built automatically** by Terraform via Docker. On the first `terraform apply`, Terraform runs build scripts that:
 
-#### Copilot CLI Layer
+1. **Git layer** – spins up an Amazon Linux 2023 container, installs git, and packages the binary + shared libraries
+2. **Copilot SDK layer** – spins up a Node.js 24 container, installs `@github/copilot-sdk`, and packages it in the Lambda `nodejs/` layer structure
 
-The Copilot SDK spawns the Copilot CLI as a child process.
+No manual layer management needed. Docker must be running.
 
-```bash
-# Download the Copilot CLI linux-x64 binary
-mkdir -p copilot-layer/bin
-# Place the copilot binary in copilot-layer/bin/copilot
-chmod +x copilot-layer/bin/copilot
-cd copilot-layer && zip -r ../copilot-cli-layer.zip .
+> **Pre-existing layers**: If you already have published layers, set `copilot_cli_layer_arn` and/or `git_layer_arn` in your Terraform vars to skip the Docker builds.
 
-# Create the layer
-aws lambda publish-layer-version \
-  --layer-name copilot-cli \
-  --zip-file fileb://copilot-cli-layer.zip \
-  --compatible-runtimes nodejs24.x
-```
-
-Set `copilot_cli_layer_arn` in your Terraform vars.
-
-#### Git Layer
-
-Lambda doesn't include git by default. You need a layer with a statically-linked git binary.
-
-```bash
-# Option: use lambci/git-lambda-layer or build your own
-# Or use an existing community layer ARN for your region
-```
-
-Set `git_layer_arn` in your Terraform vars. If git is already available in your Lambda environment (e.g. via a custom runtime), you can leave this empty.
+> **Rebuilding layers**: Delete the zips in `infra/layers/` and re-apply, or change the build scripts (the `null_resource` triggers on script hash).
 
 ### 5. Deploy Infrastructure
 
@@ -166,6 +146,7 @@ terraform apply
 
 This creates:
 - IAM role with basic Lambda execution permissions
+- Git and Copilot SDK Lambda layers (built via Docker on first run)
 - Lambda function (10 min timeout, 1 GB RAM, 2 GB ephemeral storage)
 - Lambda Function URL (public, secured by webhook secret)
 
@@ -226,3 +207,37 @@ GITHUB_TOKEN=ghp_...
 ```
 
 You can test the handler locally by invoking it with a sample webhook payload.
+
+## Troubleshooting
+
+| Issue | Cause | Fix |
+|---|---|---|
+| `git: not found` in Lambda logs | Git layer missing or not attached | Check `layers` in Lambda config; ensure Docker build ran |
+| `GIT_EXEC_PATH` errors | Git can't find helpers (git-remote-https) | Verify `GIT_EXEC_PATH=/opt/libexec/git-core` env var is set |
+| `Cannot find module '@github/copilot-sdk'` | SDK layer missing | Check Copilot SDK layer; ensure `nodejs/node_modules/` structure |
+| Lambda times out | Large repo or slow Copilot response | Increase `timeout` (max 900s) and `memory_size` |
+| `ENOSPACE` during clone | Repo too large for ephemeral storage | Increase `ephemeral_storage` (max 10240 MB) |
+| No comments posted | Copilot returned unparseable response | Check CloudWatch logs for raw Copilot output; adjust system prompt |
+| Webhook not triggering | Wrong event type or bot not in reviewers | Verify webhook is set to "Merge request events" and bot username matches `GITLAB_BOT_USERNAME` |
+| 401 on git clone | Token lacks repo access | Ensure `GITLAB_TOKEN` has `read_repository` scope (included in `api`) |
+| Inline comment fails, falls back to note | Line not present in MR diff | Expected for lines outside the diff context; review posted as regular note instead |
+
+### Checking Logs
+
+```bash
+# Tail Lambda logs (replace function name and region if different)
+aws logs tail /aws/lambda/gitlab-copilot-reviewer --follow --region eu-central-1
+```
+
+## Architecture Decisions
+
+| Decision | Rationale |
+|---|---|
+| **Copilot SDK over CLI** | CLI `/review` is TUI-only; SDK supports headless use, token auth, custom prompts, structured output |
+| **Git clone over API browsing** | One shallow clone vs N HTTP calls; SDK built-in tools (Read/Bash/Grep) work with local filesystem; matches GitHub Copilot Code Review |
+| **Shallow clone (`--depth 1`)** | Minimizes time and disk; Copilot rarely needs full history |
+| **Lambda + Function URL** | Simplest serverless webhook handler; no API Gateway needed |
+| **Docker-based layer builds** | Produces correct binaries for Amazon Linux 2023 / x86_64 regardless of dev machine |
+| **esbuild with SDK as external** | SDK is in a Lambda layer (with native deps); esbuild bundles only our code |
+| **Diff metadata from API** | SHAs and line mappings are needed for GitLab's `position` object when posting inline discussions; not available from the cloned repo alone |
+

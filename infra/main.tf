@@ -51,6 +51,68 @@ variable "copilot_model" {
   default     = "gpt-4.1"
 }
 
+variable "copilot_cli_layer_arn" {
+  description = "ARN of a pre-existing Copilot SDK Lambda layer. Leave empty to build automatically via Docker."
+  type        = string
+  default     = ""
+}
+
+variable "git_layer_arn" {
+  description = "ARN of a pre-existing Git Lambda layer. Leave empty to build automatically via Docker."
+  type        = string
+  default     = ""
+}
+
+# ─── Lambda Layers (built from Docker) ──────────────────────────────────────
+
+resource "null_resource" "build_git_layer" {
+  count = var.git_layer_arn == "" ? 1 : 0
+
+  triggers = {
+    script_hash = filesha256("${path.module}/scripts/build-git-layer.sh")
+  }
+
+  provisioner "local-exec" {
+    command = "bash ${path.module}/scripts/build-git-layer.sh ${path.module}/layers"
+  }
+}
+
+resource "null_resource" "build_copilot_layer" {
+  count = var.copilot_cli_layer_arn == "" ? 1 : 0
+
+  triggers = {
+    script_hash = filesha256("${path.module}/scripts/build-copilot-layer.sh")
+  }
+
+  provisioner "local-exec" {
+    command = "bash ${path.module}/scripts/build-copilot-layer.sh ${path.module}/layers"
+  }
+}
+
+resource "aws_lambda_layer_version" "git" {
+  count = var.git_layer_arn == "" ? 1 : 0
+
+  layer_name               = "${var.function_name}-git"
+  filename                 = "${path.module}/layers/git-layer.zip"
+  compatible_runtimes      = ["nodejs24.x"]
+  compatible_architectures = ["x86_64"]
+  description              = "Git for Amazon Linux 2023"
+
+  depends_on = [null_resource.build_git_layer]
+}
+
+resource "aws_lambda_layer_version" "copilot_sdk" {
+  count = var.copilot_cli_layer_arn == "" ? 1 : 0
+
+  layer_name               = "${var.function_name}-copilot-sdk"
+  filename                 = "${path.module}/layers/copilot-sdk-layer.zip"
+  compatible_runtimes      = ["nodejs24.x"]
+  compatible_architectures = ["x86_64"]
+  description              = "GitHub Copilot SDK and CLI"
+
+  depends_on = [null_resource.build_copilot_layer]
+}
+
 # ─── IAM Role ───────────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "lambda_role" {
@@ -96,28 +158,15 @@ resource "aws_lambda_function" "reviewer" {
       GITLAB_WEBHOOK_SECRET = var.gitlab_webhook_secret
       GITHUB_TOKEN          = var.github_token
       COPILOT_MODEL         = var.copilot_model
+      GIT_EXEC_PATH         = "/opt/libexec/git-core"
     }
   }
 
-  # Lambda layers:
-  # 1. Copilot CLI binary (required – the SDK spawns it as a child process)
-  # 2. Git binary (required – used to clone the repository)
+  # Lambda layers: built automatically or supplied via variables
   layers = compact([
-    var.copilot_cli_layer_arn,
-    var.git_layer_arn,
+    var.copilot_cli_layer_arn != "" ? var.copilot_cli_layer_arn : try(aws_lambda_layer_version.copilot_sdk[0].arn, ""),
+    var.git_layer_arn != "" ? var.git_layer_arn : try(aws_lambda_layer_version.git[0].arn, ""),
   ])
-}
-
-variable "copilot_cli_layer_arn" {
-  description = "ARN of the Lambda layer containing the Copilot CLI binary"
-  type        = string
-  default     = ""
-}
-
-variable "git_layer_arn" {
-  description = "ARN of the Lambda layer containing the git binary (e.g. lambci/git-lambda-layer)"
-  type        = string
-  default     = ""
 }
 
 # ─── Function URL ────────────────────────────────────────────────────────────
