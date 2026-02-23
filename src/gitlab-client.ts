@@ -156,7 +156,7 @@ export class GitLabClient {
           await this.postMergeRequestNote(
             projectId,
             mrIid,
-            `COPILOT: **${comment.file}:${comment.line}** – ${comment.body}`,
+            `**${comment.file}:${comment.line}** – ${comment.body}`,
           );
           posted++;
           continue;
@@ -177,7 +177,7 @@ export class GitLabClient {
           comment.severity === "warning" ? "🟡" : "ℹ️";
 
         // Format comment body with suggestion if available
-        let commentBody = `COPILOT: ${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`;
+        let commentBody = `${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`;
         if (comment.suggestion) {
           // Calculate range offsets for multi-line suggestions
           let rangeOffset = "";
@@ -205,7 +205,7 @@ export class GitLabClient {
           await this.postMergeRequestNote(
             projectId,
             mrIid,
-            `COPILOT: **${comment.file}:${comment.line}** – ${comment.body}`,
+            `**${comment.file}:${comment.line}** – ${comment.body}`,
           );
           posted++;
           failed--; // recovered
@@ -216,7 +216,7 @@ export class GitLabClient {
     }
 
     // Post summary
-    await this.postMergeRequestNote(projectId, mrIid, `COPILOT: ${summary}`);
+    await this.postMergeRequestNote(projectId, mrIid, summary);
 
     return { posted, failed };
   }

@@ -125,7 +125,7 @@ var GitLabClient = class {
           await this.postMergeRequestNote(
             projectId,
             mrIid,
-            `COPILOT: **${comment.file}:${comment.line}** \u2013 ${comment.body}`
+            `**${comment.file}:${comment.line}** \u2013 ${comment.body}`
           );
           posted++;
           continue;
@@ -140,7 +140,7 @@ var GitLabClient = class {
           new_line: comment.line
         };
         const severityIcon = comment.severity === "critical" ? "\u{1F534}" : comment.severity === "warning" ? "\u{1F7E1}" : "\u2139\uFE0F";
-        let commentBody = `COPILOT: ${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`;
+        let commentBody = `${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`;
         if (comment.suggestion) {
           let rangeOffset = "";
           if (comment.startLine !== void 0 && comment.endLine !== void 0) {
@@ -168,7 +168,7 @@ ${comment.suggestion}
           await this.postMergeRequestNote(
             projectId,
             mrIid,
-            `COPILOT: **${comment.file}:${comment.line}** \u2013 ${comment.body}`
+            `**${comment.file}:${comment.line}** \u2013 ${comment.body}`
           );
           posted++;
           failed--;
@@ -176,7 +176,7 @@ ${comment.suggestion}
         }
       }
     }
-    await this.postMergeRequestNote(projectId, mrIid, `COPILOT: ${summary}`);
+    await this.postMergeRequestNote(projectId, mrIid, summary);
     return { posted, failed };
   }
 };
@@ -562,7 +562,7 @@ async function main() {
       await gitlab.postMergeRequestNote(
         projectId,
         mrIid,
-        "COPILOT: \u{1F916} **Copilot Review**: No file changes detected in this MR."
+        "\u{1F916} **Copilot Review**: No file changes detected in this MR."
       );
       console.log("[review] No diffs to review.");
       return;
@@ -607,7 +607,7 @@ _${review.comments.length} inline comment(s) posted._`;
       await gitlab.postMergeRequestNote(
         projectId,
         mrIid,
-        `COPILOT: \u{1F916} **Copilot Review**: Review failed with an error. Check the CI job log.
+        `\u{1F916} **Copilot Review**: Review failed with an error. Check the CI job log.
 
 \`\`\`
 ${err instanceof Error ? err.message : String(err)}
