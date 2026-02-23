@@ -93,11 +93,12 @@ In the reviewer project, go to **Settings → CI/CD → Variables** and add:
 
 | Variable | Type | Protected | Masked | Value |
 |---|---|---|---|---|
-| `GITLAB_URL` | Variable | No | No | `https://gitlab.example.com` |
 | `GITLAB_TOKEN` | Variable | No | ✅ | GitLab access token with `api` scope |
 | `GITLAB_BOT_USERNAME` | Variable | No | No | `copilot-reviewer` |
 | `GITHUB_TOKEN` | Variable | No | ✅ | GitHub PAT with Copilot access |
 | `COPILOT_MODEL` | Variable | No | No | `gpt-4.1` (optional) |
+
+**Note**: The GitLab instance URL is automatically available via the `CI_SERVER_URL` predefined variable.
 
 ### 5. Configure Webhooks in Target Projects
 
@@ -128,7 +129,7 @@ In each target project, add the service account (e.g. `copilot-reviewer`) as a m
 
 | Variable | Required | Description |
 |---|---|---|
-| `GITLAB_URL` | ✅ | GitLab instance URL |
+| `CI_SERVER_URL` | Auto | GitLab instance URL (predefined variable, automatically set) |
 | `GITLAB_TOKEN` | ✅ | Access token with `api` scope (also used for cloning) |
 | `GITLAB_BOT_USERNAME` | ✅ | Service account username |
 | `GITHUB_TOKEN` | ✅ | GitHub PAT with Copilot access |

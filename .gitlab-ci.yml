@@ -9,10 +9,11 @@
 # See: https://docs.gitlab.com/ci/triggers/#use-a-webhook
 #
 # Required CI/CD variables (set in Settings → CI/CD → Variables):
-#   GITLAB_URL          – GitLab instance URL
 #   GITLAB_TOKEN        – Access token with api scope (masked)
 #   GITLAB_BOT_USERNAME – Service account username
 #   GITHUB_TOKEN        – GitHub PAT with Copilot access (masked)
+#
+# Note: CI_SERVER_URL (GitLab instance URL) is automatically available
 #
 # Optional:
 #   COPILOT_MODEL       – Model override (default: gpt-4.1)
@@ -31,7 +32,7 @@ copilot-review:
     - when: never
 
   variables:
-    GITLAB_URL: $GITLAB_URL
+    # CI_SERVER_URL is automatically available (predefined variable)
     GITLAB_TOKEN: $GITLAB_TOKEN
     GITLAB_BOT_USERNAME: $GITLAB_BOT_USERNAME
     GITHUB_TOKEN: $GITHUB_TOKEN
