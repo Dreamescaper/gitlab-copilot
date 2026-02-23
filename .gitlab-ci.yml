@@ -31,13 +31,6 @@ copilot-review:
       when: always
     - when: never
 
-  variables:
-    # CI_SERVER_URL is automatically available (predefined variable)
-    GITLAB_TOKEN: $GITLAB_TOKEN
-    GITLAB_BOT_USERNAME: $GITLAB_BOT_USERNAME
-    GITHUB_TOKEN: $GITHUB_TOKEN
-    COPILOT_MODEL: $COPILOT_MODEL
-
   before_script:
     # Install git (needed to clone the target repo)
     - apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1
