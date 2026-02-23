@@ -40,7 +40,7 @@ copilot-review:
   script:
     - node dist/index.mjs
 
-  timeout: 30m
+  timeout: 10m
 
   # Allow the job to fail without blocking other pipelines
   allow_failure: true

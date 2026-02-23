@@ -411,6 +411,7 @@ The repository contains an \`agents.md\` file with additional instructions for A
       // on a temporary clone that gets deleted after the review.
       onPermissionRequest: async () => ({ kind: "approved" })
     });
+    console.log(`[reviewer] Session created with model: ${config.copilotModel}`);
     const userPrompt = buildDiffPrompt(
       opts.mrTitle,
       opts.mrDescription,
@@ -424,7 +425,7 @@ The repository contains an \`agents.md\` file with additional instructions for A
     );
     const response = await session.sendAndWait({
       prompt: userPrompt
-    });
+    }, 3e5);
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got response (${responseContent.length} chars)`);
     await session.destroy();

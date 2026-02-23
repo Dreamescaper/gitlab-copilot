@@ -294,6 +294,8 @@ export async function reviewMergeRequest(
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
+    console.log(`[reviewer] Session created with model: ${config.copilotModel}`);
+
     const userPrompt = buildDiffPrompt(
       opts.mrTitle,
       opts.mrDescription,
@@ -309,8 +311,8 @@ export async function reviewMergeRequest(
     );
 
     const response = await session.sendAndWait({
-      prompt: userPrompt,
-    });
+      prompt: userPrompt
+    }, 300000);
 
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got response (${responseContent.length} chars)`);
