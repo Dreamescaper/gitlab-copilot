@@ -10,7 +10,7 @@ import type {
  *   1. object_kind === "merge_request"
  *   2. action is "update" (reviewer list changed)
  *   3. The bot service account was ADDED to the reviewer list
- *      (present in `changes.reviewer_ids.current` but not in `changes.reviewer_ids.previous`)
+ *      (present in `changes.reviewers.current` but not in `changes.reviewers.previous`)
  *   4. MR is not a draft / WIP
  */
 export function shouldTriggerReview(
@@ -46,11 +46,18 @@ export function shouldTriggerReview(
     return false;
   }
 
-  // Check if reviewer_ids actually changed and bot was newly added
-  const reviewerChanges = payload.changes?.reviewer_ids;
+  // Check if reviewers actually changed and bot was newly added
+  // GitLab webhook sends changes.reviewers (with full user objects), not reviewer_ids
+  const reviewerChanges = payload.changes?.reviewers ?? payload.changes?.reviewer_ids;
   if (reviewerChanges) {
-    const previousIds = reviewerChanges.previous ?? [];
-    const currentIds = reviewerChanges.current ?? [];
+    // Extract IDs from reviewer objects if needed
+    const previousIds = Array.isArray(reviewerChanges.previous)
+      ? reviewerChanges.previous.map((r: any) => typeof r === 'number' ? r : r.id)
+      : [];
+    const currentIds = Array.isArray(reviewerChanges.current)
+      ? reviewerChanges.current.map((r: any) => typeof r === 'number' ? r : r.id)
+      : [];
+    
     const wasAlreadyReviewer = previousIds.includes(botUser.id);
     const isNowReviewer = currentIds.includes(botUser.id);
 

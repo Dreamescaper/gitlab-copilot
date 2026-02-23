@@ -69,6 +69,10 @@ export interface MergeRequestChanges {
     previous: number[];
     current: number[];
   };
+  reviewers?: {
+    previous: GitLabUser[];
+    current: GitLabUser[];
+  };
   [key: string]: unknown;
 }
 

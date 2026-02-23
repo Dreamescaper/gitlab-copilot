@@ -461,10 +461,10 @@ function shouldTriggerReview(payload, botUsername) {
     console.log("[webhook] Bot user not found in reviewers list");
     return false;
   }
-  const reviewerChanges = payload.changes?.reviewer_ids;
+  const reviewerChanges = payload.changes?.reviewers ?? payload.changes?.reviewer_ids;
   if (reviewerChanges) {
-    const previousIds = reviewerChanges.previous ?? [];
-    const currentIds = reviewerChanges.current ?? [];
+    const previousIds = Array.isArray(reviewerChanges.previous) ? reviewerChanges.previous.map((r) => typeof r === "number" ? r : r.id) : [];
+    const currentIds = Array.isArray(reviewerChanges.current) ? reviewerChanges.current.map((r) => typeof r === "number" ? r : r.id) : [];
     const wasAlreadyReviewer = previousIds.includes(botUser.id);
     const isNowReviewer = currentIds.includes(botUser.id);
     if (wasAlreadyReviewer || !isNowReviewer) {
