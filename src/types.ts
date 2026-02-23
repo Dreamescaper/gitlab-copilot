@@ -123,9 +123,12 @@ export interface MergeRequestDiffVersionDetail extends MergeRequestDiffVersion {
 
 export interface ReviewComment {
   file: string;
-  line: number;
+  line: number; // The line being commented on (where the discussion thread attaches)
+  startLine?: number; // Start of the range to replace (if multi-line suggestion)
+  endLine?: number; // End of the range to replace (if multi-line suggestion)
   body: string;
   severity: "info" | "warning" | "critical";
+  suggestion?: string; // Optional code suggestion for GitLab suggestions feature
 }
 
 export interface ReviewResult {

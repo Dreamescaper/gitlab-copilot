@@ -140,10 +140,24 @@ var GitLabClient = class {
           new_line: comment.line
         };
         const severityIcon = comment.severity === "critical" ? "\u{1F534}" : comment.severity === "warning" ? "\u{1F7E1}" : "\u2139\uFE0F";
+        let commentBody = `COPILOT: ${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`;
+        if (comment.suggestion) {
+          let rangeOffset = "";
+          if (comment.startLine !== void 0 && comment.endLine !== void 0) {
+            const beforeOffset = comment.line - comment.startLine;
+            const afterOffset = comment.endLine - comment.line;
+            rangeOffset = `:${beforeOffset > 0 ? "-" : ""}${Math.abs(beforeOffset)}+${afterOffset}`;
+          }
+          commentBody += `
+
+\`\`\`suggestion${rangeOffset}
+${comment.suggestion}
+\`\`\``;
+        }
         await this.postDiffDiscussion(
           projectId,
           mrIid,
-          `COPILOT: ${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`,
+          commentBody,
           position
         );
         posted++;
@@ -289,6 +303,11 @@ You will be given a diff of the changes. The full repository source code is avai
 
 - Only comment on CHANGED lines (lines with + prefix in the diff), but use context from the broader codebase to inform your comments.
 - Be specific and actionable. Always suggest a fix or improvement.
+- For issues that have a clear code fix, include a "suggestion" field with the corrected code. For example:
+  - Security issue: provide the corrected line with proper ARN restrictions
+  - Bug: provide the corrected code with proper error handling
+  - Naming issue: provide the line with the better name
+  - Missing feature: provide the added code or configuration
 - Do NOT comment on minor style nitpicks (formatting, spacing) unless they violate project conventions.
 - If the code looks good, say so briefly.
 - Read the actual source to verify your assumptions \u2014 don't guess about what existing code does.
@@ -304,10 +323,15 @@ When you have finished your review, respond with ONLY valid JSON matching this e
       "file": "path/to/file.ts",
       "line": 42,
       "body": "Description of the issue and suggested fix.",
-      "severity": "info | warning | critical"
+      "severity": "info | warning | critical",
+      "suggestion": "(optional) Suggested replacement code.",
+      "startLine": 40,
+      "endLine": 44
     }
   ]
 }
+
+Note: line is where the comment attaches; startLine and endLine describe the range being replaced (if suggestion spans multiple lines).
 
 If there are no issues, return:
 {
@@ -365,7 +389,10 @@ function parseReviewResponse(content) {
       file: c.file,
       line: c.line,
       body: c.body,
-      severity: ["info", "warning", "critical"].includes(c.severity) ? c.severity : "info"
+      severity: ["info", "warning", "critical"].includes(c.severity) ? c.severity : "info",
+      suggestion: typeof c.suggestion === "string" ? c.suggestion : void 0,
+      startLine: typeof c.startLine === "number" ? c.startLine : void 0,
+      endLine: typeof c.endLine === "number" ? c.endLine : void 0
     }));
     return parsed;
   } catch (err) {

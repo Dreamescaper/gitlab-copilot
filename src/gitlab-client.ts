@@ -176,10 +176,23 @@ export class GitLabClient {
           comment.severity === "critical" ? "🔴" :
           comment.severity === "warning" ? "🟡" : "ℹ️";
 
+        // Format comment body with suggestion if available
+        let commentBody = `COPILOT: ${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`;
+        if (comment.suggestion) {
+          // Calculate range offsets for multi-line suggestions
+          let rangeOffset = "";
+          if (comment.startLine !== undefined && comment.endLine !== undefined) {
+            const beforeOffset = comment.line - comment.startLine;
+            const afterOffset = comment.endLine - comment.line;
+            rangeOffset = `:${beforeOffset > 0 ? "-" : ""}${Math.abs(beforeOffset)}+${afterOffset}`;
+          }
+          commentBody += `\n\n\`\`\`suggestion${rangeOffset}\n${comment.suggestion}\n\`\`\``;
+        }
+
         await this.postDiffDiscussion(
           projectId,
           mrIid,
-          `COPILOT: ${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`,
+          commentBody,
           position,
         );
         posted++;

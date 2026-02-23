@@ -108,6 +108,11 @@ You will be given a diff of the changes. The full repository source code is avai
 
 - Only comment on CHANGED lines (lines with + prefix in the diff), but use context from the broader codebase to inform your comments.
 - Be specific and actionable. Always suggest a fix or improvement.
+- For issues that have a clear code fix, include a "suggestion" field with the corrected code. For example:
+  - Security issue: provide the corrected line with proper ARN restrictions
+  - Bug: provide the corrected code with proper error handling
+  - Naming issue: provide the line with the better name
+  - Missing feature: provide the added code or configuration
 - Do NOT comment on minor style nitpicks (formatting, spacing) unless they violate project conventions.
 - If the code looks good, say so briefly.
 - Read the actual source to verify your assumptions — don't guess about what existing code does.
@@ -123,10 +128,15 @@ When you have finished your review, respond with ONLY valid JSON matching this e
       "file": "path/to/file.ts",
       "line": 42,
       "body": "Description of the issue and suggested fix.",
-      "severity": "info | warning | critical"
+      "severity": "info | warning | critical",
+      "suggestion": "(optional) Suggested replacement code.",
+      "startLine": 40,
+      "endLine": 44
     }
   ]
 }
+
+Note: line is where the comment attaches; startLine and endLine describe the range being replaced (if suggestion spans multiple lines).
 
 If there are no issues, return:
 {
@@ -222,6 +232,9 @@ function parseReviewResponse(content: string): ReviewResult {
         severity: ["info", "warning", "critical"].includes(c.severity)
           ? c.severity
           : "info",
+        suggestion: typeof c.suggestion === "string" ? c.suggestion : undefined,
+        startLine: typeof c.startLine === "number" ? c.startLine : undefined,
+        endLine: typeof c.endLine === "number" ? c.endLine : undefined,
       }));
 
     return parsed;
