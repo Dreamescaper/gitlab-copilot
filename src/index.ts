@@ -3,51 +3,78 @@
 /**
  * CLI entrypoint for the GitLab Copilot Reviewer.
  *
- * Invoked by a GitLab CI pipeline trigger with MR metadata as pipeline variables:
- *   MR_PROJECT_ID, MR_IID, MR_TITLE, MR_DESCRIPTION,
- *   MR_SOURCE_BRANCH, MR_TARGET_BRANCH, MR_PROJECT_URL, MR_HTTP_URL
+ * Invoked by a GitLab CI pipeline triggered directly from a GitLab webhook.
+ * The webhook payload is available via the $TRIGGER_PAYLOAD predefined
+ * CI/CD variable (file-type), containing the full MR webhook JSON.
+ *
+ * See: https://docs.gitlab.com/ci/triggers/#use-a-webhook
  *
  * The pipeline runs in the *reviewer* project, so this script clones the
  * *target* project (where the MR lives) before running the review.
  *
  * Flow:
- *   1. Load config from environment variables
- *   2. Clone the target project's source branch
- *   3. Fetch MR diffs from GitLab API
- *   4. Run Copilot SDK review (with full repo on disk)
- *   5. Post review comments back to GitLab MR
- *   6. Clean up the clone
+ *   1. Read & parse the webhook payload from $TRIGGER_PAYLOAD
+ *   2. Validate the event (MR update, bot added as reviewer, not draft)
+ *   3. Load config from environment variables
+ *   4. Clone the target project's source branch
+ *   5. Fetch MR diffs from GitLab API
+ *   6. Run Copilot SDK review (with full repo on disk)
+ *   7. Post review comments back to GitLab MR
+ *   8. Clean up the clone
  */
 
+import { readFile } from "node:fs/promises";
 import { loadConfig } from "./config.js";
 import { GitLabClient } from "./gitlab-client.js";
 import { cloneRepository } from "./git.js";
 import { reviewMergeRequest } from "./reviewer.js";
+import { shouldTriggerReview } from "./webhook.js";
+import type { MergeRequestWebhookPayload } from "./types.js";
 
-function requireEnvVar(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    console.error(`[review] Missing required pipeline variable: ${name}`);
-    process.exit(1);
+/**
+ * Read and parse the webhook payload from the $TRIGGER_PAYLOAD file variable.
+ */
+async function loadTriggerPayload(): Promise<MergeRequestWebhookPayload> {
+  const payloadPath = process.env["TRIGGER_PAYLOAD"];
+  if (!payloadPath) {
+    throw new Error(
+      "TRIGGER_PAYLOAD variable not set. " +
+      "This job must be triggered via a webhook pipeline trigger.",
+    );
   }
-  return value;
+
+  const raw = await readFile(payloadPath, "utf-8");
+  return JSON.parse(raw) as MergeRequestWebhookPayload;
 }
 
 async function main(): Promise<void> {
   console.log("[review] Starting Copilot code review…");
 
+  // ─── Load & validate webhook payload ────────────────────────────────────
+  const payload = await loadTriggerPayload();
+  console.log(
+    `[review] Received ${payload.object_kind} event ` +
+    `(action: ${payload.object_attributes?.action ?? "unknown"})`,
+  );
+
   // ─── Load config ────────────────────────────────────────────────────────
   const config = loadConfig();
 
-  // ─── Read MR info from pipeline trigger variables ───────────────────────
-  const projectId = Number(requireEnvVar("MR_PROJECT_ID"));
-  const mrIid = Number(requireEnvVar("MR_IID"));
-  const mrTitle = requireEnvVar("MR_TITLE");
-  const mrDescription = process.env["MR_DESCRIPTION"] ?? "";
-  const sourceBranch = requireEnvVar("MR_SOURCE_BRANCH");
-  const targetBranch = requireEnvVar("MR_TARGET_BRANCH");
-  const projectUrl = requireEnvVar("MR_PROJECT_URL");
-  const httpUrl = requireEnvVar("MR_HTTP_URL");
+  // ─── Check trigger conditions ───────────────────────────────────────────
+  if (!shouldTriggerReview(payload, config.gitlabBotUsername)) {
+    console.log("[review] Event does not require a review – exiting.");
+    return;
+  }
+
+  // ─── Extract MR metadata from webhook payload ──────────────────────────
+  const projectId = payload.project.id;
+  const mrIid = payload.object_attributes.iid;
+  const mrTitle = payload.object_attributes.title;
+  const mrDescription = payload.object_attributes.description ?? "";
+  const sourceBranch = payload.object_attributes.source_branch;
+  const targetBranch = payload.object_attributes.target_branch;
+  const projectUrl = payload.project.web_url;
+  const httpUrl = payload.project.http_url;
   const mrUrl = `${projectUrl}/-/merge_requests/${mrIid}`;
 
   console.log(

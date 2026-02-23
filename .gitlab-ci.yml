@@ -1,11 +1,12 @@
 # ─── GitLab Copilot Reviewer CI ──────────────────────────────────────────────
 #
-# This pipeline runs in the *reviewer* project and is triggered by the
-# webhook receiver via GitLab's Pipeline Trigger API.
+# This pipeline runs in the *reviewer* project and is triggered directly
+# by GitLab webhooks via a Pipeline Trigger URL.
 #
-# It receives MR metadata as pipeline variables (MR_PROJECT_ID, MR_IID, etc.),
-# clones the target project, runs a Copilot SDK review, and posts comments
-# back to the MR.
+# The webhook payload is automatically available as $TRIGGER_PAYLOAD
+# (file-type variable). The review script reads it to extract MR metadata.
+#
+# See: https://docs.gitlab.com/ci/triggers/#use-a-webhook
 #
 # Required CI/CD variables (set in Settings → CI/CD → Variables):
 #   GITLAB_URL          – GitLab instance URL
@@ -23,28 +24,18 @@ copilot-review:
   stage: review
   image: node:24-slim
 
-  # Only run when triggered via the Pipeline Trigger API (not on push/MR)
+  # Only run when triggered via the Pipeline Trigger API (webhook or manual)
   rules:
-    - if: $CI_PIPELINE_SOURCE == "trigger" && $MR_PROJECT_ID && $MR_IID
+    - if: $CI_PIPELINE_SOURCE == "trigger"
       when: always
     - when: never
 
   variables:
-    # Pass through to the review script
     GITLAB_URL: $GITLAB_URL
     GITLAB_TOKEN: $GITLAB_TOKEN
     GITLAB_BOT_USERNAME: $GITLAB_BOT_USERNAME
     GITHUB_TOKEN: $GITHUB_TOKEN
     COPILOT_MODEL: $COPILOT_MODEL
-    # These come from the pipeline trigger (set by webhook server)
-    MR_PROJECT_ID: $MR_PROJECT_ID
-    MR_IID: $MR_IID
-    MR_TITLE: $MR_TITLE
-    MR_DESCRIPTION: $MR_DESCRIPTION
-    MR_SOURCE_BRANCH: $MR_SOURCE_BRANCH
-    MR_TARGET_BRANCH: $MR_TARGET_BRANCH
-    MR_PROJECT_URL: $MR_PROJECT_URL
-    MR_HTTP_URL: $MR_HTTP_URL
 
   before_script:
     # Install git (needed to clone the target repo)

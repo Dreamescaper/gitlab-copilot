@@ -5,8 +5,6 @@
   "type": "module",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --target=node24 --outfile=dist/index.mjs --format=esm --external:@github/copilot-sdk",
-    "build:server": "esbuild src/server.ts --bundle --platform=node --target=node24 --outfile=dist/server.mjs --format=esm",
-    "build:all": "npm run build && npm run build:server",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [

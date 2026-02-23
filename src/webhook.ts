@@ -4,17 +4,6 @@ import type {
 } from "./types.js";
 
 /**
- * Verify the GitLab webhook secret token.
- * GitLab sends the secret in the `X-Gitlab-Token` header (plain text, not HMAC).
- */
-export function verifyWebhookToken(
-  headerToken: string | undefined,
-  secret: string,
-): boolean {
-  return headerToken === secret;
-}
-
-/**
  * Determine whether this webhook event should trigger a review.
  *
  * Criteria:
