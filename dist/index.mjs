@@ -345,7 +345,10 @@ When done, output your review as JSON.`;
 }
 function parseReviewResponse(content) {
   let cleaned = content.trim();
-  if (cleaned.startsWith("```")) {
+  const jsonBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (jsonBlockMatch) {
+    cleaned = jsonBlockMatch[1].trim();
+  } else if (cleaned.startsWith("```")) {
     cleaned = cleaned.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
   }
   try {

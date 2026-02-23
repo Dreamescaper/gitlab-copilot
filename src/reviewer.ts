@@ -186,9 +186,15 @@ When done, output your review as JSON.`;
 // ─── Response parser ────────────────────────────────────────────────────────
 
 function parseReviewResponse(content: string): ReviewResult {
-  // Strip markdown code fences if present
+  // Try to extract JSON from markdown code fences
   let cleaned = content.trim();
-  if (cleaned.startsWith("```")) {
+
+  // Look for ```json...``` or ```...``` blocks
+  const jsonBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (jsonBlockMatch) {
+    cleaned = jsonBlockMatch[1]!.trim();
+  } else if (cleaned.startsWith("```")) {
+    // Fallback: old behavior if fence is at start
     cleaned = cleaned.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
   }
 
