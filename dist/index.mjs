@@ -125,7 +125,7 @@ var GitLabClient = class {
           await this.postMergeRequestNote(
             projectId,
             mrIid,
-            `**${comment.file}:${comment.line}** \u2013 ${comment.body}`
+            `COPILOT: **${comment.file}:${comment.line}** \u2013 ${comment.body}`
           );
           posted++;
           continue;
@@ -143,7 +143,7 @@ var GitLabClient = class {
         await this.postDiffDiscussion(
           projectId,
           mrIid,
-          `${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`,
+          `COPILOT: ${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`,
           position
         );
         posted++;
@@ -154,7 +154,7 @@ var GitLabClient = class {
           await this.postMergeRequestNote(
             projectId,
             mrIid,
-            `**${comment.file}:${comment.line}** \u2013 ${comment.body}`
+            `COPILOT: **${comment.file}:${comment.line}** \u2013 ${comment.body}`
           );
           posted++;
           failed--;
@@ -162,7 +162,7 @@ var GitLabClient = class {
         }
       }
     }
-    await this.postMergeRequestNote(projectId, mrIid, summary);
+    await this.postMergeRequestNote(projectId, mrIid, `COPILOT: ${summary}`);
     return { posted, failed };
   }
 };
@@ -529,7 +529,7 @@ async function main() {
       await gitlab.postMergeRequestNote(
         projectId,
         mrIid,
-        "\u{1F916} **Copilot Review**: No file changes detected in this MR."
+        "COPILOT: \u{1F916} **Copilot Review**: No file changes detected in this MR."
       );
       console.log("[review] No diffs to review.");
       return;
@@ -574,7 +574,7 @@ _${review.comments.length} inline comment(s) posted._`;
       await gitlab.postMergeRequestNote(
         projectId,
         mrIid,
-        `\u{1F916} **Copilot Review**: Review failed with an error. Check the CI job log.
+        `COPILOT: \u{1F916} **Copilot Review**: Review failed with an error. Check the CI job log.
 
 \`\`\`
 ${err instanceof Error ? err.message : String(err)}

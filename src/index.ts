@@ -104,7 +104,7 @@ async function main(): Promise<void> {
       await gitlab.postMergeRequestNote(
         projectId,
         mrIid,
-        "🤖 **Copilot Review**: No file changes detected in this MR.",
+        "COPILOT: 🤖 **Copilot Review**: No file changes detected in this MR.",
       );
       console.log("[review] No diffs to review.");
       return;
@@ -158,7 +158,7 @@ async function main(): Promise<void> {
       await gitlab.postMergeRequestNote(
         projectId,
         mrIid,
-        `🤖 **Copilot Review**: Review failed with an error. Check the CI job log.\n\n` +
+        `COPILOT: 🤖 **Copilot Review**: Review failed with an error. Check the CI job log.\n\n` +
         `\`\`\`\n${err instanceof Error ? err.message : String(err)}\n\`\`\``,
       );
     } catch {

@@ -156,7 +156,7 @@ export class GitLabClient {
           await this.postMergeRequestNote(
             projectId,
             mrIid,
-            `**${comment.file}:${comment.line}** – ${comment.body}`,
+            `COPILOT: **${comment.file}:${comment.line}** – ${comment.body}`,
           );
           posted++;
           continue;
@@ -179,7 +179,7 @@ export class GitLabClient {
         await this.postDiffDiscussion(
           projectId,
           mrIid,
-          `${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`,
+          `COPILOT: ${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`,
           position,
         );
         posted++;
@@ -192,7 +192,7 @@ export class GitLabClient {
           await this.postMergeRequestNote(
             projectId,
             mrIid,
-            `**${comment.file}:${comment.line}** – ${comment.body}`,
+            `COPILOT: **${comment.file}:${comment.line}** – ${comment.body}`,
           );
           posted++;
           failed--; // recovered
@@ -203,7 +203,7 @@ export class GitLabClient {
     }
 
     // Post summary
-    await this.postMergeRequestNote(projectId, mrIid, summary);
+    await this.postMergeRequestNote(projectId, mrIid, `COPILOT: ${summary}`);
 
     return { posted, failed };
   }
