@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { CopilotClient } from "@github/copilot-sdk";
 import type { Config } from "./config.js";
 import type {
@@ -6,6 +8,74 @@ import type {
   ReviewComment,
   ReviewResult,
 } from "./types.js";
+
+// ─── Project-specific instructions ──────────────────────────────────────────
+
+/**
+ * Well-known paths for project-specific review instructions.
+ * For each group, the first file found is used (checked in order).
+ * Both copilot-instructions.md and agents.md can coexist — if both
+ * are present, their contents are combined.
+ */
+const COPILOT_INSTRUCTIONS_PATHS = [
+  ".github/copilot-instructions.md",
+  ".gitlab/copilot-instructions.md",
+  "copilot-instructions.md",
+];
+
+const AGENTS_PATHS = [
+  ".github/agents.md",
+  ".gitlab/agents.md",
+  "agents.md",
+];
+
+/**
+ * Try to read the first existing file from a list of candidate paths.
+ */
+async function loadFirstFound(
+  repoDir: string,
+  candidates: string[],
+): Promise<{ path: string; content: string } | undefined> {
+  for (const relPath of candidates) {
+    try {
+      const content = await readFile(join(repoDir, relPath), "utf-8");
+      return { path: relPath, content: content.trim() };
+    } catch {
+      // file doesn't exist, try next
+    }
+  }
+  return undefined;
+}
+
+interface ProjectInstructions {
+  copilotInstructions?: string;
+  agentsInstructions?: string;
+}
+
+/**
+ * Load project-specific instructions from the cloned repo.
+ * Checks for both copilot-instructions.md and agents.md.
+ */
+async function loadProjectInstructions(
+  repoDir: string,
+): Promise<ProjectInstructions> {
+  const [copilot, agents] = await Promise.all([
+    loadFirstFound(repoDir, COPILOT_INSTRUCTIONS_PATHS),
+    loadFirstFound(repoDir, AGENTS_PATHS),
+  ]);
+
+  if (copilot) {
+    console.log(`[reviewer] Loaded copilot-instructions from ${copilot.path}`);
+  }
+  if (agents) {
+    console.log(`[reviewer] Loaded agents instructions from ${agents.path}`);
+  }
+
+  return {
+    copilotInstructions: copilot?.content,
+    agentsInstructions: agents?.content,
+  };
+}
 
 // ─── System prompt ──────────────────────────────────────────────────────────
 
@@ -185,6 +255,28 @@ export async function reviewMergeRequest(
 ): Promise<ReviewResult> {
   const { config, repoDir, diffVersion } = opts;
 
+  // Load project-specific review instructions if available
+  const { copilotInstructions, agentsInstructions } =
+    await loadProjectInstructions(repoDir);
+
+  let systemPrompt = REVIEW_SYSTEM_PROMPT;
+
+  if (copilotInstructions) {
+    systemPrompt +=
+      `\n\n## Project-Specific Instructions (copilot-instructions.md)\n\n` +
+      `The repository contains a \`copilot-instructions.md\` file. ` +
+      `Follow these guidelines in addition to the rules above:\n\n` +
+      copilotInstructions;
+  }
+
+  if (agentsInstructions) {
+    systemPrompt +=
+      `\n\n## Agent Instructions (agents.md)\n\n` +
+      `The repository contains an \`agents.md\` file with additional instructions ` +
+      `for AI agents. Follow these guidelines:\n\n` +
+      agentsInstructions;
+  }
+
   const client = new CopilotClient({
     githubToken: config.githubToken,
   });
@@ -195,7 +287,7 @@ export async function reviewMergeRequest(
       workingDirectory: repoDir,
       systemMessage: {
         mode: "append",
-        content: REVIEW_SYSTEM_PROMPT,
+        content: systemPrompt,
       },
       // Auto-approve all tool calls — they are read-only operations
       // on a temporary clone that gets deleted after the review.
