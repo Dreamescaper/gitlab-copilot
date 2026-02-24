@@ -23,7 +23,9 @@ stages:
 
 copilot-review:
   stage: review
-  image: node:24-slim
+  image: 
+    name: node:24-slim
+    pull_policy: if-not-present
 
   # Only run when triggered via the Pipeline Trigger API (webhook or manual)
   rules:
