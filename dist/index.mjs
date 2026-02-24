@@ -391,7 +391,7 @@ async function cloneRepository(gitHttpUrl, branch, gitlabToken) {
 }
 
 // src/reviewer.ts
-import { readFile } from "node:fs/promises";
+import { readFile, access } from "node:fs/promises";
 import { join as join2 } from "node:path";
 import { CopilotClient } from "@github/copilot-sdk";
 function truncate(text, max) {
@@ -453,6 +453,11 @@ var AGENTS_PATHS = [
   ".gitlab/agents.md",
   "agents.md"
 ];
+var SKILLS_DIRS = [
+  ".github/skills",
+  ".claude/skills",
+  ".agents/skills"
+];
 async function loadFirstFound(repoDir, candidates) {
   for (const relPath of candidates) {
     try {
@@ -463,10 +468,22 @@ async function loadFirstFound(repoDir, candidates) {
   }
   return void 0;
 }
+async function findSkillDirectories(repoDir) {
+  const dirs = [];
+  for (const dir of SKILLS_DIRS) {
+    try {
+      await access(join2(repoDir, dir));
+      dirs.push(join2(repoDir, dir));
+    } catch {
+    }
+  }
+  return dirs;
+}
 async function loadProjectInstructions(repoDir) {
-  const [copilot, agents] = await Promise.all([
+  const [copilot, agents, skillDirectories] = await Promise.all([
     loadFirstFound(repoDir, COPILOT_INSTRUCTIONS_PATHS),
-    loadFirstFound(repoDir, AGENTS_PATHS)
+    loadFirstFound(repoDir, AGENTS_PATHS),
+    findSkillDirectories(repoDir)
   ]);
   if (copilot) {
     console.log(`[reviewer] Loaded copilot-instructions from ${copilot.path}`);
@@ -474,9 +491,15 @@ async function loadProjectInstructions(repoDir) {
   if (agents) {
     console.log(`[reviewer] Loaded agents instructions from ${agents.path}`);
   }
+  if (skillDirectories.length > 0) {
+    console.log(
+      `[reviewer] Found skill directories: ${skillDirectories.join(", ")}`
+    );
+  }
   return {
     copilotInstructions: copilot?.content,
-    agentsInstructions: agents?.content
+    agentsInstructions: agents?.content,
+    skillDirectories
   };
 }
 var REVIEW_SYSTEM_PROMPT = `You are an expert code reviewer performing a review on a GitLab Merge Request.
@@ -618,7 +641,7 @@ function parseReviewResponse(content) {
 }
 async function reviewMergeRequest(opts) {
   const { config, repoDir, diffVersion } = opts;
-  const { copilotInstructions, agentsInstructions } = await loadProjectInstructions(repoDir);
+  const { copilotInstructions, agentsInstructions, skillDirectories } = await loadProjectInstructions(repoDir);
   let systemPrompt = REVIEW_SYSTEM_PROMPT;
   if (copilotInstructions) {
     systemPrompt += `
@@ -649,6 +672,8 @@ The repository contains an \`agents.md\` file with additional instructions for A
         mode: "append",
         content: systemPrompt
       },
+      // Load skill directories natively via the SDK
+      ...skillDirectories.length > 0 && { skillDirectories },
       // Tool call logging hooks — auto-approve all operations (read-only
       // on a temporary clone that gets deleted after the review).
       hooks: buildSessionHooks(config.logLevel)
@@ -727,7 +752,7 @@ Rules for suggestions:
 - If the discussion is a general MR comment (not on a specific line), use regular code blocks instead.`;
 async function replyToComment(opts) {
   const { config, repoDir } = opts;
-  const { copilotInstructions, agentsInstructions } = await loadProjectInstructions(repoDir);
+  const { copilotInstructions, agentsInstructions, skillDirectories } = await loadProjectInstructions(repoDir);
   let systemPrompt = COMMENT_REPLY_SYSTEM_PROMPT;
   if (copilotInstructions) {
     systemPrompt += `
@@ -754,6 +779,7 @@ async function replyToComment(opts) {
         mode: "append",
         content: systemPrompt
       },
+      ...skillDirectories.length > 0 && { skillDirectories },
       hooks: buildSessionHooks(config.logLevel)
     });
     const detachListeners = attachSessionListeners(session, config.logLevel);

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, access } from "node:fs/promises";
 import { join } from "node:path";
 import { CopilotClient } from "@github/copilot-sdk";
 import type { Config } from "./config.js";
@@ -100,6 +100,16 @@ const AGENTS_PATHS = [
 ];
 
 /**
+ * Well-known directories for agent skill files.
+ * Existing directories are passed to the Copilot SDK via skillDirectories.
+ */
+const SKILLS_DIRS = [
+  ".github/skills",
+  ".claude/skills",
+  ".agents/skills",
+];
+
+/**
  * Try to read the first existing file from a list of candidate paths.
  */
 async function loadFirstFound(
@@ -117,21 +127,40 @@ async function loadFirstFound(
   return undefined;
 }
 
+/**
+ * Find all existing skill directories in the repo.
+ * Returns absolute paths suitable for the SDK's skillDirectories option.
+ */
+async function findSkillDirectories(repoDir: string): Promise<string[]> {
+  const dirs: string[] = [];
+  for (const dir of SKILLS_DIRS) {
+    try {
+      await access(join(repoDir, dir));
+      dirs.push(join(repoDir, dir));
+    } catch {
+      // directory doesn't exist
+    }
+  }
+  return dirs;
+}
+
 interface ProjectInstructions {
   copilotInstructions?: string;
   agentsInstructions?: string;
+  skillDirectories: string[];
 }
 
 /**
  * Load project-specific instructions from the cloned repo.
- * Checks for both copilot-instructions.md and agents.md.
+ * Checks for copilot-instructions.md, agents.md, and skills directories.
  */
 async function loadProjectInstructions(
   repoDir: string,
 ): Promise<ProjectInstructions> {
-  const [copilot, agents] = await Promise.all([
+  const [copilot, agents, skillDirectories] = await Promise.all([
     loadFirstFound(repoDir, COPILOT_INSTRUCTIONS_PATHS),
     loadFirstFound(repoDir, AGENTS_PATHS),
+    findSkillDirectories(repoDir),
   ]);
 
   if (copilot) {
@@ -140,10 +169,16 @@ async function loadProjectInstructions(
   if (agents) {
     console.log(`[reviewer] Loaded agents instructions from ${agents.path}`);
   }
+  if (skillDirectories.length > 0) {
+    console.log(
+      `[reviewer] Found skill directories: ${skillDirectories.join(", ")}`,
+    );
+  }
 
   return {
     copilotInstructions: copilot?.content,
     agentsInstructions: agents?.content,
+    skillDirectories,
   };
 }
 
@@ -352,7 +387,7 @@ export async function reviewMergeRequest(
   const { config, repoDir, diffVersion } = opts;
 
   // Load project-specific review instructions if available
-  const { copilotInstructions, agentsInstructions } =
+  const { copilotInstructions, agentsInstructions, skillDirectories } =
     await loadProjectInstructions(repoDir);
 
   let systemPrompt = REVIEW_SYSTEM_PROMPT;
@@ -385,6 +420,8 @@ export async function reviewMergeRequest(
         mode: "append",
         content: systemPrompt,
       },
+      // Load skill directories natively via the SDK
+      ...(skillDirectories.length > 0 && { skillDirectories }),
       // Tool call logging hooks — auto-approve all operations (read-only
       // on a temporary clone that gets deleted after the review).
       hooks: buildSessionHooks(config.logLevel),
@@ -502,7 +539,7 @@ export async function replyToComment(
   const { config, repoDir } = opts;
 
   // Load project-specific instructions
-  const { copilotInstructions, agentsInstructions } =
+  const { copilotInstructions, agentsInstructions, skillDirectories } =
     await loadProjectInstructions(repoDir);
 
   let systemPrompt = COMMENT_REPLY_SYSTEM_PROMPT;
@@ -531,6 +568,7 @@ export async function replyToComment(
         mode: "append",
         content: systemPrompt,
       },
+      ...(skillDirectories.length > 0 && { skillDirectories }),
       hooks: buildSessionHooks(config.logLevel),
     });
 
