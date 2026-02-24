@@ -9,38 +9,82 @@ import type {
 
 // ─── Diff line parser ───────────────────────────────────────────────────────
 
+export interface DiffLineInfo {
+  /** The new-side line number */
+  newLine: number;
+  /** The old-side line number (null for added lines, set for context lines) */
+  oldLine: number | null;
+}
+
 /**
- * Extract the set of new-side line numbers that appear in a unified diff.
- * These are the only lines GitLab will accept for inline comments.
+ * Parse a unified diff to extract new-side line numbers and their metadata.
+ * Returns a Map from new_line → DiffLineInfo.
+ *
+ * For **added** lines (`+`): oldLine is null (line only exists in new version).
+ * For **context** lines (no prefix): oldLine is set (line exists in both versions).
+ *
+ * GitLab's Draft Notes API needs both old_line and new_line for context lines
+ * to properly resolve the position and generate line_code.
  */
-function extractNewLinesFromDiff(diff: string): Set<number> {
-  const lines = new Set<number>();
+export function parseDiffLines(diff: string): Map<number, DiffLineInfo> {
+  const lines = new Map<number, DiffLineInfo>();
   let currentNewLine = 0;
+  let currentOldLine = 0;
 
   for (const line of diff.split("\n")) {
     // Hunk header: @@ -oldStart,oldCount +newStart,newCount @@
-    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunkMatch) {
-      currentNewLine = parseInt(hunkMatch[1]!, 10);
+      currentOldLine = parseInt(hunkMatch[1]!, 10);
+      currentNewLine = parseInt(hunkMatch[2]!, 10);
       continue;
     }
 
     if (currentNewLine === 0) continue; // before first hunk
 
     if (line.startsWith("+")) {
-      // Added line — present on new side
-      lines.add(currentNewLine);
+      // Added line — only on new side
+      lines.set(currentNewLine, { newLine: currentNewLine, oldLine: null });
       currentNewLine++;
     } else if (line.startsWith("-")) {
       // Removed line — only on old side, don't increment new line counter
+      currentOldLine++;
     } else {
       // Context line — present on both sides
-      lines.add(currentNewLine);
+      lines.set(currentNewLine, { newLine: currentNewLine, oldLine: currentOldLine });
       currentNewLine++;
+      currentOldLine++;
     }
   }
 
   return lines;
+}
+
+/**
+ * Compute old_line for a new_line that is OUTSIDE any diff hunk.
+ * These are unchanged context lines — old_line = new_line adjusted by
+ * the cumulative insertions/deletions from earlier hunks.
+ */
+export function computeOldLine(diff: string, newLine: number): number {
+  let offset = 0; // cumulative (old - new) offset after each processed hunk
+
+  for (const line of diff.split("\n")) {
+    const m = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (!m) continue;
+
+    const oldStart = parseInt(m[1]!, 10);
+    const oldCount = parseInt(m[2] ?? "1", 10);
+    const newStart = parseInt(m[3]!, 10);
+    const newCount = parseInt(m[4] ?? "1", 10);
+
+    // If this hunk starts after newLine, we're in the gap before it
+    if (newLine < newStart) break;
+
+    // Update offset: after this hunk, old_line = new_line + offset
+    offset = (oldStart + oldCount) - (newStart + newCount);
+  }
+
+  return newLine + offset;
 }
 
 /**
@@ -247,17 +291,20 @@ export class GitLabClient {
 
   /**
    * Create an inline diff draft note on a merge request.
+   * The commit_id ties the note to a specific commit so GitLab can resolve
+   * the correct file version for the position.
    */
   async createDraftDiffNote(
     projectId: number,
     mrIid: number,
     note: string,
     position: DiffPosition,
+    commitId: string,
   ): Promise<{ id: number }> {
     return this.request<{ id: number }>(
       "POST",
       `/projects/${projectId}/merge_requests/${mrIid}/draft_notes`,
-      { note, position },
+      { note, position, commit_id: commitId },
     );
   }
 
@@ -370,20 +417,21 @@ export class GitLabClient {
         }
 
         // Verify the comment line exists in the diff hunks
-        const diffLines = extractNewLinesFromDiff(diffFile.diff);
-        if (!diffLines.has(comment.line)) {
-          console.warn(
-            `[gitlab] Line ${comment.line} not in diff hunks for "${comment.file}", creating as general draft note`,
+        const diffLines = parseDiffLines(diffFile.diff);
+        let lineInfo = diffLines.get(comment.line);
+        if (!lineInfo) {
+          // Line is outside diff hunks — unchanged context line.
+          // Compute old_line from cumulative hunk offsets.
+          const oldLine = computeOldLine(diffFile.diff, comment.line);
+          lineInfo = { newLine: comment.line, oldLine };
+          console.log(
+            `[gitlab] Line ${comment.line} not in diff hunks for "${comment.file}", ` +
+            `computed old_line=${oldLine} from hunk offsets`,
           );
-          await this.createDraftNote(
-            projectId,
-            mrIid,
-            `**${comment.file}:${comment.line}** – ${commentBody}`,
-          );
-          posted++;
-          continue;
         }
 
+        // Build position: for context lines, set both old_line and new_line
+        // so GitLab can compute line_code. For added lines, only new_line.
         const position: DiffPosition = {
           position_type: "text",
           base_sha: diffVersion.base_commit_sha,
@@ -391,14 +439,23 @@ export class GitLabClient {
           start_sha: diffVersion.start_commit_sha,
           old_path: diffFile.old_path,
           new_path: diffFile.new_path,
-          new_line: comment.line,
+          new_line: lineInfo.newLine,
+          ...(lineInfo.oldLine !== null && { old_line: lineInfo.oldLine }),
         };
+
+        const lineType = lineInfo.oldLine !== null ? "context" : "added";
+        console.log(
+          `[gitlab] Creating draft note: ${comment.file}:${comment.line} (${lineType}) ` +
+          `old_line=${lineInfo.oldLine ?? "null"} new_line=${lineInfo.newLine} ` +
+          `head=${diffVersion.head_commit_sha.slice(0, 8)}`,
+        );
 
         await this.createDraftDiffNote(
           projectId,
           mrIid,
           commentBody,
           position,
+          diffVersion.head_commit_sha,
         );
         posted++;
       } catch (err) {
@@ -424,7 +481,7 @@ export class GitLabClient {
     if (posted > 0) {
       console.log(`[gitlab] Publishing review (${posted} draft note(s))...`);
       await this.publishAllDraftNotes(projectId, mrIid);
-      console.log("[gitlab] Review submitted.");
+      console.log("[gitlab] Review submitted via bulk_publish.");
     }
 
     // Post summary as a separate, non-discussion note (not resolvable)

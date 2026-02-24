@@ -35,26 +35,44 @@ function loadConfig() {
 }
 
 // src/gitlab-client.ts
-function extractNewLinesFromDiff(diff) {
-  const lines = /* @__PURE__ */ new Set();
+function parseDiffLines(diff) {
+  const lines = /* @__PURE__ */ new Map();
   let currentNewLine = 0;
+  let currentOldLine = 0;
   for (const line of diff.split("\n")) {
-    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunkMatch) {
-      currentNewLine = parseInt(hunkMatch[1], 10);
+      currentOldLine = parseInt(hunkMatch[1], 10);
+      currentNewLine = parseInt(hunkMatch[2], 10);
       continue;
     }
     if (currentNewLine === 0) continue;
     if (line.startsWith("+")) {
-      lines.add(currentNewLine);
+      lines.set(currentNewLine, { newLine: currentNewLine, oldLine: null });
       currentNewLine++;
     } else if (line.startsWith("-")) {
+      currentOldLine++;
     } else {
-      lines.add(currentNewLine);
+      lines.set(currentNewLine, { newLine: currentNewLine, oldLine: currentOldLine });
       currentNewLine++;
+      currentOldLine++;
     }
   }
   return lines;
+}
+function computeOldLine(diff, newLine) {
+  let offset = 0;
+  for (const line of diff.split("\n")) {
+    const m = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (!m) continue;
+    const oldStart = parseInt(m[1], 10);
+    const oldCount = parseInt(m[2] ?? "1", 10);
+    const newStart = parseInt(m[3], 10);
+    const newCount = parseInt(m[4] ?? "1", 10);
+    if (newLine < newStart) break;
+    offset = oldStart + oldCount - (newStart + newCount);
+  }
+  return newLine + offset;
 }
 var GitLabClient = class {
   baseUrl;
@@ -191,12 +209,14 @@ var GitLabClient = class {
   }
   /**
    * Create an inline diff draft note on a merge request.
+   * The commit_id ties the note to a specific commit so GitLab can resolve
+   * the correct file version for the position.
    */
-  async createDraftDiffNote(projectId, mrIid, note, position) {
+  async createDraftDiffNote(projectId, mrIid, note, position, commitId) {
     return this.request(
       "POST",
       `/projects/${projectId}/merge_requests/${mrIid}/draft_notes`,
-      { note, position }
+      { note, position, commit_id: commitId }
     );
   }
   /**
@@ -285,18 +305,14 @@ ${comment.suggestion}
           posted++;
           continue;
         }
-        const diffLines = extractNewLinesFromDiff(diffFile.diff);
-        if (!diffLines.has(comment.line)) {
-          console.warn(
-            `[gitlab] Line ${comment.line} not in diff hunks for "${comment.file}", creating as general draft note`
+        const diffLines = parseDiffLines(diffFile.diff);
+        let lineInfo = diffLines.get(comment.line);
+        if (!lineInfo) {
+          const oldLine = computeOldLine(diffFile.diff, comment.line);
+          lineInfo = { newLine: comment.line, oldLine };
+          console.log(
+            `[gitlab] Line ${comment.line} not in diff hunks for "${comment.file}", computed old_line=${oldLine} from hunk offsets`
           );
-          await this.createDraftNote(
-            projectId,
-            mrIid,
-            `**${comment.file}:${comment.line}** \u2013 ${commentBody}`
-          );
-          posted++;
-          continue;
         }
         const position = {
           position_type: "text",
@@ -305,13 +321,19 @@ ${comment.suggestion}
           start_sha: diffVersion.start_commit_sha,
           old_path: diffFile.old_path,
           new_path: diffFile.new_path,
-          new_line: comment.line
+          new_line: lineInfo.newLine,
+          ...lineInfo.oldLine !== null && { old_line: lineInfo.oldLine }
         };
+        const lineType = lineInfo.oldLine !== null ? "context" : "added";
+        console.log(
+          `[gitlab] Creating draft note: ${comment.file}:${comment.line} (${lineType}) old_line=${lineInfo.oldLine ?? "null"} new_line=${lineInfo.newLine} head=${diffVersion.head_commit_sha.slice(0, 8)}`
+        );
         await this.createDraftDiffNote(
           projectId,
           mrIid,
           commentBody,
-          position
+          position,
+          diffVersion.head_commit_sha
         );
         posted++;
       } catch (err) {
@@ -332,7 +354,7 @@ ${comment.suggestion}
     if (posted > 0) {
       console.log(`[gitlab] Publishing review (${posted} draft note(s))...`);
       await this.publishAllDraftNotes(projectId, mrIid);
-      console.log("[gitlab] Review submitted.");
+      console.log("[gitlab] Review submitted via bulk_publish.");
     }
     await this.postMergeRequestNote(projectId, mrIid, summary);
     return { posted, failed, skipped };
