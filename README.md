@@ -43,6 +43,7 @@ The review pipeline triggers on two types of events:
 1. Bot user is **newly added as a reviewer** on a non-draft MR
 2. Review is **re-requested** via GitLab UI (detects `re_requested: true` on the bot's reviewer entry)
 3. MR transitions from **Draft → Ready** while bot is already a reviewer
+4. MR is **opened** with the bot already assigned as a reviewer (non-draft only)
 
 **Comment Reply** (note webhook):
 1. A comment on an MR mentions the bot (`@copilot-reviewer`)

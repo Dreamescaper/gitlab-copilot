@@ -992,10 +992,6 @@ function shouldTriggerReview(payload, botUsername) {
     return false;
   }
   const action = payload.object_attributes.action;
-  if (action !== "update") {
-    console.log("[webhook] Ignoring MR action:", action);
-    return false;
-  }
   const botUser = payload.reviewers?.find(
     (r) => r.username === botUsername
   );
@@ -1007,6 +1003,16 @@ function shouldTriggerReview(payload, botUsername) {
   }
   if (payload.object_attributes.draft || payload.object_attributes.work_in_progress) {
     console.log("[webhook] Ignoring draft MR");
+    return false;
+  }
+  if (action === "open") {
+    console.log(
+      `[webhook] Review triggered: MR opened with bot as reviewer for MR !${payload.object_attributes.iid} in ${payload.project.path_with_namespace}`
+    );
+    return true;
+  }
+  if (action !== "update") {
+    console.log("[webhook] Ignoring MR action:", action);
     return false;
   }
   const reviewerChanges = payload.changes?.reviewers ?? payload.changes?.reviewer_ids;

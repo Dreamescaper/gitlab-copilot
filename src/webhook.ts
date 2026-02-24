@@ -35,7 +35,7 @@ export function classifyWebhookEvent(
 /**
  * Determine whether this webhook event should trigger a review.
  *
- * Triggers in three cases:
+ * Triggers in four cases:
  *   1. Bot is NEWLY ADDED as a reviewer:
  *      - changes.reviewers shows bot added (current but not previous)
  *      - MR is not a draft
@@ -48,6 +48,11 @@ export function classifyWebhookEvent(
  *   3. MR transitions from Draft → non-Draft AND bot is already reviewer:
  *      - changes.draft or changes.work_in_progress shows transition
  *      - Bot is in current reviewers list
+ *   
+ *   4. MR is OPENED with bot already assigned as reviewer:
+ *      - action === "open"
+ *      - Bot is in reviewers list
+ *      - MR is not a draft
  */
 export function shouldTriggerReview(
   payload: MergeRequestWebhookPayload,
@@ -59,12 +64,8 @@ export function shouldTriggerReview(
     return false;
   }
 
-  // Must be an update action
+  // Get the action
   const action = payload.object_attributes.action;
-  if (action !== "update") {
-    console.log("[webhook] Ignoring MR action:", action);
-    return false;
-  }
 
   // Find bot in current reviewers
   const botUser = payload.reviewers?.find(
@@ -81,6 +82,21 @@ export function shouldTriggerReview(
   // Skip if MR is currently a draft
   if (payload.object_attributes.draft || payload.object_attributes.work_in_progress) {
     console.log("[webhook] Ignoring draft MR");
+    return false;
+  }
+
+  // CASE 4: MR opened with bot already assigned
+  if (action === "open") {
+    console.log(
+      `[webhook] Review triggered: MR opened with bot as reviewer for MR !${payload.object_attributes.iid} ` +
+      `in ${payload.project.path_with_namespace}`,
+    );
+    return true;
+  }
+
+  // Must be an update action for the remaining cases
+  if (action !== "update") {
+    console.log("[webhook] Ignoring MR action:", action);
     return false;
   }
 
