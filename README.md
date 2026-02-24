@@ -167,7 +167,7 @@ In each target project, add the service account (e.g. `copilot-reviewer`) as a m
 | `GITLAB_BOT_USERNAME` | ✅ | Service account username |
 | `GITHUB_TOKEN` | ✅ | GitHub PAT with Copilot access |
 | `COPILOT_MODEL` | | Model to use (default: `gpt-4.1`) |
-| `LOG_LEVEL` | | Logging level (default: `info`) |
+| `LOG_LEVEL` | | Logging level (default: `info`). Set to `debug` for full Copilot tool-call logging |
 | `JIRA_URL` | | Jira instance URL (e.g. `https://yourteam.atlassian.net`) |
 | `JIRA_EMAIL` | | Email for Jira API Basic auth |
 | `JIRA_API_TOKEN` | | Jira API token |
@@ -222,6 +222,16 @@ Same for `agents.md`. Contents are appended to the Copilot system prompt.
 ```bash
 # CI job logs
 # → Go to the reviewer project → CI/CD → Pipelines → select the triggered pipeline
+```
+
+By default, every Copilot tool call (file reads, grep, bash) is logged with its arguments.
+Set `LOG_LEVEL=debug` to also log tool results and model reasoning tokens:
+
+```
+[copilot] ▶ tool: Read  args: {"path":"src/index.ts"}
+[copilot] ◀ result (Read): {"content":"import { readFile }..."}
+[copilot] ▶ tool: Grep  args: {"pattern":"handleReview","path":"src/"}
+[copilot] session idle
 ```
 
 ## Architecture Decisions

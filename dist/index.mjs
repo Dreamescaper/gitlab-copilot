@@ -357,6 +357,55 @@ async function cloneRepository(gitHttpUrl, branch, gitlabToken) {
 import { readFile } from "node:fs/promises";
 import { join as join2 } from "node:path";
 import { CopilotClient } from "@github/copilot-sdk";
+function truncate(text, max) {
+  if (text.length <= max) return text;
+  return text.slice(0, max) + "\u2026";
+}
+function buildSessionHooks(logLevel) {
+  const isDebug = logLevel === "debug";
+  return {
+    onPreToolUse: async (input) => {
+      const argsStr = truncate(JSON.stringify(input.toolArgs), 300);
+      console.log(`[copilot] \u25B6 tool: ${input.toolName}  args: ${argsStr}`);
+      return { permissionDecision: "allow" };
+    },
+    onPostToolUse: async (input) => {
+      if (isDebug) {
+        const resultStr = truncate(JSON.stringify(input.toolResult), 500);
+        console.log(`[copilot] \u25C0 result (${input.toolName}): ${resultStr}`);
+      }
+    }
+  };
+}
+function attachSessionListeners(session, logLevel) {
+  const isDebug = logLevel === "debug";
+  const unsubscribers = [];
+  if (isDebug) {
+    unsubscribers.push(
+      session.on("assistant.reasoning_delta", (event) => {
+        process.stderr.write(event.data.deltaContent);
+      })
+    );
+  }
+  unsubscribers.push(
+    session.on("session.error", (event) => {
+      console.error(`[copilot] \u2716 error: ${event.data.message}`);
+    })
+  );
+  unsubscribers.push(
+    session.on("session.idle", () => {
+      console.log(`[copilot] session idle`);
+    })
+  );
+  return () => {
+    for (const unsub of unsubscribers) {
+      try {
+        unsub();
+      } catch {
+      }
+    }
+  };
+}
 var COPILOT_INSTRUCTIONS_PATHS = [
   ".github/copilot-instructions.md",
   ".gitlab/copilot-instructions.md",
@@ -563,10 +612,11 @@ The repository contains an \`agents.md\` file with additional instructions for A
         mode: "append",
         content: systemPrompt
       },
-      // Auto-approve all tool calls — they are read-only operations
-      // on a temporary clone that gets deleted after the review.
-      onPermissionRequest: async () => ({ kind: "approved" })
+      // Tool call logging hooks — auto-approve all operations (read-only
+      // on a temporary clone that gets deleted after the review).
+      hooks: buildSessionHooks(config.logLevel)
     });
+    const detachListeners = attachSessionListeners(session, config.logLevel);
     console.log(`[reviewer] Session created with model: ${config.copilotModel}`);
     const userPrompt = buildDiffPrompt(
       opts.mrTitle,
@@ -585,6 +635,7 @@ The repository contains an \`agents.md\` file with additional instructions for A
     }, 3e5);
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got response (${responseContent.length} chars)`);
+    detachListeners();
     await session.destroy();
     await client.stop();
     return parseReviewResponse(responseContent);
@@ -666,8 +717,9 @@ async function replyToComment(opts) {
         mode: "append",
         content: systemPrompt
       },
-      onPermissionRequest: async () => ({ kind: "approved" })
+      hooks: buildSessionHooks(config.logLevel)
     });
+    const detachListeners = attachSessionListeners(session, config.logLevel);
     console.log(`[reviewer] Comment reply session created with model: ${config.copilotModel}`);
     let prompt = `# Merge Request: ${opts.mrTitle}
 **URL**: ${opts.mrUrl}
@@ -716,6 +768,7 @@ ${msg.body}
     }, 3e5);
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got reply (${responseContent.length} chars)`);
+    detachListeners();
     await session.destroy();
     await client.stop();
     return responseContent.trim();

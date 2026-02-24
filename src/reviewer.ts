@@ -10,6 +10,75 @@ import type {
   NoteWebhookPayload,
 } from "./types.js";
 
+// ─── Session logging helpers ────────────────────────────────────────────────
+
+/**
+ * Truncate a string to a maximum length, appending "…" if truncated.
+ */
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max) + "…";
+}
+
+/**
+ * Return hooks for createSession that log every tool call to the console.
+ * When LOG_LEVEL=debug, tool results are logged as well (truncated).
+ */
+function buildSessionHooks(logLevel: string) {
+  const isDebug = logLevel === "debug";
+  return {
+    onPreToolUse: async (input: { toolName: string; toolArgs: unknown }) => {
+      const argsStr = truncate(JSON.stringify(input.toolArgs), 300);
+      console.log(`[copilot] ▶ tool: ${input.toolName}  args: ${argsStr}`);
+      return { permissionDecision: "allow" as const };
+    },
+    onPostToolUse: async (input: { toolName: string; toolResult: unknown }) => {
+      if (isDebug) {
+        const resultStr = truncate(JSON.stringify(input.toolResult), 500);
+        console.log(`[copilot] ◀ result (${input.toolName}): ${resultStr}`);
+      }
+    },
+  };
+}
+
+/**
+ * Attach session event listeners for streaming progress visibility.
+ * Returns a cleanup function that unsubscribes all listeners.
+ */
+function attachSessionListeners(session: { on: Function }, logLevel: string): () => void {
+  const isDebug = logLevel === "debug";
+  const unsubscribers: Array<() => void> = [];
+
+  // Log reasoning tokens (for models like o1 that expose reasoning)
+  if (isDebug) {
+    unsubscribers.push(
+      session.on("assistant.reasoning_delta", (event: { data: { deltaContent: string } }) => {
+        process.stderr.write(event.data.deltaContent);
+      }),
+    );
+  }
+
+  // Log errors
+  unsubscribers.push(
+    session.on("session.error", (event: { data: { message: string } }) => {
+      console.error(`[copilot] ✖ error: ${event.data.message}`);
+    }),
+  );
+
+  // Log idle state
+  unsubscribers.push(
+    session.on("session.idle", () => {
+      console.log(`[copilot] session idle`);
+    }),
+  );
+
+  return () => {
+    for (const unsub of unsubscribers) {
+      try { unsub(); } catch { /* ignore */ }
+    }
+  };
+}
+
 // ─── Project-specific instructions ──────────────────────────────────────────
 
 /**
@@ -316,10 +385,13 @@ export async function reviewMergeRequest(
         mode: "append",
         content: systemPrompt,
       },
-      // Auto-approve all tool calls — they are read-only operations
-      // on a temporary clone that gets deleted after the review.
-      onPermissionRequest: async () => ({ kind: "approved" }),
+      // Tool call logging hooks — auto-approve all operations (read-only
+      // on a temporary clone that gets deleted after the review).
+      hooks: buildSessionHooks(config.logLevel),
     });
+
+    // Attach event listeners for errors/reasoning visibility
+    const detachListeners = attachSessionListeners(session, config.logLevel);
 
     console.log(`[reviewer] Session created with model: ${config.copilotModel}`);
 
@@ -345,6 +417,7 @@ export async function reviewMergeRequest(
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got response (${responseContent.length} chars)`);
 
+    detachListeners();
     await session.destroy();
     await client.stop();
 
@@ -458,8 +531,10 @@ export async function replyToComment(
         mode: "append",
         content: systemPrompt,
       },
-      onPermissionRequest: async () => ({ kind: "approved" }),
+      hooks: buildSessionHooks(config.logLevel),
     });
+
+    const detachListeners = attachSessionListeners(session, config.logLevel);
 
     console.log(`[reviewer] Comment reply session created with model: ${config.copilotModel}`);
 
@@ -501,6 +576,7 @@ export async function replyToComment(
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got reply (${responseContent.length} chars)`);
 
+    detachListeners();
     await session.destroy();
     await client.stop();
 
