@@ -5,6 +5,7 @@ Automated code review for GitLab Merge Requests powered by **GitHub Copilot SDK*
 ## Features
 
 - **Automated MR reviews** — triggered when a bot user is added as reviewer
+- **Re-request support** — re-requesting a review triggers a fresh review on updated code
 - **Draft-aware** — auto-reviews when MR transitions from Draft to Ready (if bot is already a reviewer)
 - **Comment replies** — mention the bot (`@copilot-reviewer`) in any MR comment to get an AI-powered response with full thread context
 - **Code suggestions** — inline suggestions using GitLab's Apply Suggestion UI (single-line and multi-line ranges)
@@ -37,7 +38,8 @@ The review pipeline triggers on two types of events:
 
 **Full Code Review** (merge_request webhook):
 1. Bot user is **newly added as a reviewer** on a non-draft MR
-2. MR transitions from **Draft → Ready** while bot is already a reviewer
+2. Review is **re-requested** via GitLab UI (detects `re_requested: true` on the bot's reviewer entry)
+3. MR transitions from **Draft → Ready** while bot is already a reviewer
 
 **Comment Reply** (note webhook):
 1. A comment on an MR mentions the bot (`@copilot-reviewer`)
@@ -143,6 +145,10 @@ In each target project, add the service account (e.g. `copilot-reviewer`) as a m
 1. Open or update a Merge Request in a target project
 2. Add the bot user (e.g. `copilot-reviewer`) as a **Reviewer**
 3. The webhook fires → pipeline triggers → CI job reviews and posts comments
+
+**Re-request review (after updates):**
+1. After pushing new commits to the MR, click the **Re-request review** button next to the bot reviewer
+2. A fresh review runs on the updated code (duplicate detection avoids re-posting identical findings)
 
 **Comment reply:**
 1. In any MR comment or discussion thread, mention the bot: `@copilot-reviewer can you explain this?`

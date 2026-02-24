@@ -905,6 +905,15 @@ function shouldTriggerReview(payload, botUsername) {
       );
       return true;
     }
+    if (isNowReviewer && wasAlreadyReviewer) {
+      const botInCurrent = Array.isArray(reviewerChanges.current) ? reviewerChanges.current.find((r) => (typeof r === "number" ? r : r.id) === botUser.id) : void 0;
+      if (botInCurrent && typeof botInCurrent === "object" && botInCurrent.re_requested === true) {
+        console.log(
+          `[webhook] Review triggered: Review re-requested for MR !${payload.object_attributes.iid} in ${payload.project.path_with_namespace}`
+        );
+        return true;
+      }
+    }
   }
   const draftChanges = payload.changes?.draft;
   const wipChanges = payload.changes?.work_in_progress;

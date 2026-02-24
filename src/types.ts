@@ -6,6 +6,10 @@ export interface GitLabUser {
   username: string;
   avatar_url: string;
   email?: string;
+  /** Reviewer state: "unreviewed", "reviewed", "approved", etc. */
+  state?: string;
+  /** True when a review has been re-requested via GitLab UI */
+  re_requested?: boolean;
 }
 
 export interface GitLabProject {

@@ -35,13 +35,17 @@ export function classifyWebhookEvent(
 /**
  * Determine whether this webhook event should trigger a review.
  *
- * Triggers in two cases:
+ * Triggers in three cases:
  *   1. Bot is NEWLY ADDED as a reviewer:
- *      - Must be an "update" action
  *      - changes.reviewers shows bot added (current but not previous)
  *      - MR is not a draft
  *   
- *   2. MR transitions from Draft → non-Draft AND bot is already reviewer:
+ *   2. Review is RE-REQUESTED (bot removed and re-added):
+ *      - changes.reviewers is present (reviewer list changed)
+ *      - Bot is in both previous and current reviewers
+ *      - MR is not a draft
+ *   
+ *   3. MR transitions from Draft → non-Draft AND bot is already reviewer:
  *      - changes.draft or changes.work_in_progress shows transition
  *      - Bot is in current reviewers list
  */
@@ -80,7 +84,7 @@ export function shouldTriggerReview(
     return false;
   }
 
-  // Check CASE 1: Bot was newly added as a reviewer
+  // Check CASE 1 & 2: Reviewer list changed and bot is in current reviewers
   const reviewerChanges = payload.changes?.reviewers ?? payload.changes?.reviewer_ids;
   if (reviewerChanges) {
     const previousIds = Array.isArray(reviewerChanges.previous)
@@ -93,12 +97,29 @@ export function shouldTriggerReview(
     const wasAlreadyReviewer = previousIds.includes(botUser.id);
     const isNowReviewer = currentIds.includes(botUser.id);
 
+    // CASE 1: Bot newly added
     if (isNowReviewer && !wasAlreadyReviewer) {
       console.log(
         `[webhook] Review triggered: Bot newly added as reviewer for MR !${payload.object_attributes.iid} ` +
         `in ${payload.project.path_with_namespace}`,
       );
       return true;
+    }
+
+    // CASE 2: Re-request — bot in both previous and current, with re_requested: true
+    if (isNowReviewer && wasAlreadyReviewer) {
+      const botInCurrent = Array.isArray(reviewerChanges.current)
+        ? reviewerChanges.current.find((r: any) =>
+            (typeof r === 'number' ? r : r.id) === botUser.id)
+        : undefined;
+
+      if (botInCurrent && typeof botInCurrent === 'object' && botInCurrent.re_requested === true) {
+        console.log(
+          `[webhook] Review triggered: Review re-requested for MR !${payload.object_attributes.iid} ` +
+          `in ${payload.project.path_with_namespace}`,
+        );
+        return true;
+      }
     }
   }
 
