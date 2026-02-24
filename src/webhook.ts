@@ -1,7 +1,36 @@
 import type {
   MergeRequestWebhookPayload,
+  NoteWebhookPayload,
+  WebhookPayload,
   GitLabUser,
 } from "./types.js";
+
+/**
+ * Determine the type of webhook event and whether it should trigger any action.
+ */
+export function classifyWebhookEvent(
+  payload: WebhookPayload,
+  botUsername: string,
+): { type: "review"; payload: MergeRequestWebhookPayload }
+  | { type: "comment_reply"; payload: NoteWebhookPayload }
+  | { type: "ignore"; reason: string } {
+  
+  if (payload.object_kind === "merge_request") {
+    if (shouldTriggerReview(payload, botUsername)) {
+      return { type: "review", payload };
+    }
+    return { type: "ignore", reason: "MR event did not match trigger conditions" };
+  }
+  
+  if (payload.object_kind === "note") {
+    if (shouldRespondToComment(payload, botUsername)) {
+      return { type: "comment_reply", payload };
+    }
+    return { type: "ignore", reason: "Note event did not match reply conditions" };
+  }
+  
+  return { type: "ignore", reason: `Unhandled event type: ${(payload as any).object_kind}` };
+}
 
 /**
  * Determine whether this webhook event should trigger a review.
@@ -105,4 +134,55 @@ export function shouldTriggerReview(
 
   console.log("[webhook] No trigger conditions met (not bot added, and not draft→non-draft transition)");
   return false;
+}
+
+// ─── Comment Reply Detection ────────────────────────────────────────────────
+
+/**
+ * Determine whether this note webhook event should trigger a comment reply.
+ *
+ * Criteria:
+ *   1. object_kind === "note"
+ *   2. The note is on a merge request (noteable_type === "MergeRequest")
+ *   3. The note body mentions the bot username (@botUsername)
+ *   4. The note author is NOT the bot itself (avoid infinite loops)
+ */
+function shouldRespondToComment(
+  payload: NoteWebhookPayload,
+  botUsername: string,
+): boolean {
+  if (payload.object_kind !== "note") {
+    return false;
+  }
+
+  // Must be a note on a merge request
+  if (payload.object_attributes.noteable_type !== "MergeRequest") {
+    console.log("[webhook] Ignoring note on non-MR:", payload.object_attributes.noteable_type);
+    return false;
+  }
+
+  // Must have MR context
+  if (!payload.merge_request) {
+    console.log("[webhook] Note event missing merge_request context");
+    return false;
+  }
+
+  // Ignore notes from the bot itself (prevent infinite loops)
+  if (payload.user.username === botUsername) {
+    console.log("[webhook] Ignoring note from bot itself");
+    return false;
+  }
+
+  // Check if the note mentions the bot
+  const mentionPattern = `@${botUsername}`;
+  if (!payload.object_attributes.note.includes(mentionPattern)) {
+    console.log(`[webhook] Note does not mention ${mentionPattern}`);
+    return false;
+  }
+
+  console.log(
+    `[webhook] Comment reply triggered: @${botUsername} mentioned in discussion ` +
+    `${payload.object_attributes.discussion_id} on MR !${payload.merge_request.iid}`,
+  );
+  return true;
 }

@@ -27,14 +27,18 @@ import { readFile } from "node:fs/promises";
 import { loadConfig } from "./config.js";
 import { GitLabClient } from "./gitlab-client.js";
 import { cloneRepository } from "./git.js";
-import { reviewMergeRequest } from "./reviewer.js";
-import { shouldTriggerReview } from "./webhook.js";
-import type { MergeRequestWebhookPayload } from "./types.js";
+import { reviewMergeRequest, replyToComment } from "./reviewer.js";
+import { classifyWebhookEvent } from "./webhook.js";
+import type {
+  MergeRequestWebhookPayload,
+  NoteWebhookPayload,
+  WebhookPayload,
+} from "./types.js";
 
 /**
  * Read and parse the webhook payload from the $TRIGGER_PAYLOAD file variable.
  */
-async function loadTriggerPayload(): Promise<MergeRequestWebhookPayload> {
+async function loadTriggerPayload(): Promise<WebhookPayload> {
   const payloadPath = process.env["TRIGGER_PAYLOAD"];
   if (!payloadPath) {
     throw new Error(
@@ -44,7 +48,7 @@ async function loadTriggerPayload(): Promise<MergeRequestWebhookPayload> {
   }
 
   const raw = await readFile(payloadPath, "utf-8");
-  return JSON.parse(raw) as MergeRequestWebhookPayload;
+  return JSON.parse(raw) as WebhookPayload;
 }
 
 async function main(): Promise<void> {
@@ -53,20 +57,145 @@ async function main(): Promise<void> {
   // ─── Load & validate webhook payload ────────────────────────────────────
   const payload = await loadTriggerPayload();
   console.log(
-    `[review] Received ${payload.object_kind} event ` +
-    `(action: ${payload.object_attributes?.action ?? "unknown"})`,
+    `[review] Received ${payload.object_kind} event`,
   );
 
   // ─── Load config ────────────────────────────────────────────────────────
   const config = loadConfig();
 
-  // ─── Check trigger conditions ───────────────────────────────────────────
-  if (!shouldTriggerReview(payload, config.gitlabBotUsername)) {
-    console.log("[review] Event does not require a review – exiting.");
+  // ─── Classify event ─────────────────────────────────────────────────────
+  const event = classifyWebhookEvent(payload, config.gitlabBotUsername);
+
+  if (event.type === "ignore") {
+    console.log(`[review] Event ignored: ${event.reason}`);
     return;
   }
 
-  // ─── Extract MR metadata from webhook payload ──────────────────────────
+  if (event.type === "comment_reply") {
+    await handleCommentReply(event.payload, config);
+    return;
+  }
+
+  // event.type === "review"
+  await handleMergeRequestReview(event.payload, config);
+}
+
+// ─── Comment Reply Handler ──────────────────────────────────────────────────
+
+async function handleCommentReply(
+  payload: NoteWebhookPayload,
+  config: ReturnType<typeof loadConfig>,
+): Promise<void> {
+  const projectId = payload.project.id;
+  const mr = payload.merge_request!;
+  const mrIid = mr.iid;
+  const discussionId = payload.object_attributes.discussion_id;
+  const httpUrl = payload.project.http_url;
+  const sourceBranch = mr.source_branch;
+
+  console.log(
+    `[review] Responding to comment in discussion ${discussionId} ` +
+    `on MR !${mrIid} in ${payload.project.path_with_namespace}`,
+  );
+
+  const gitlab = new GitLabClient(config);
+  let cleanup: (() => Promise<void>) | undefined;
+
+  try {
+    // ─── Fetch full discussion thread ────────────────────────────────────
+    console.log("[review] Fetching discussion thread…");
+    const notes = await gitlab.getDiscussionNotes(projectId, mrIid, discussionId);
+    console.log(`[review] Thread has ${notes.length} message(s)`);
+
+    const threadMessages = notes.map((note) => ({
+      author: note.author.username,
+      body: note.body,
+      createdAt: note.created_at,
+    }));
+
+    // ─── Extract file/line context if inline discussion ──────────────────
+    const position = payload.object_attributes.position;
+    const filePath = position?.new_path;
+    const lineNumber = position?.new_line ?? undefined;
+
+    // ─── Get diff context if available ───────────────────────────────────
+    let diffContext: string | undefined;
+    if (filePath) {
+      try {
+        const diffVersion = await gitlab.getLatestDiffs(projectId, mrIid);
+        const diffFile = diffVersion.diffs.find(
+          (d) => d.new_path === filePath || d.old_path === filePath,
+        );
+        if (diffFile) {
+          diffContext = diffFile.diff;
+        }
+      } catch {
+        console.warn("[review] Could not fetch diff context, continuing without it");
+      }
+    }
+
+    // ─── Clone the target project ────────────────────────────────────────
+    console.log("[review] Cloning target repository…");
+    const clone = await cloneRepository(httpUrl, sourceBranch, config.gitlabToken);
+    cleanup = clone.cleanup;
+    console.log(`[review] Cloned to ${clone.dir}`);
+
+    // ─── Generate reply ──────────────────────────────────────────────────
+    console.log("[review] Generating Copilot reply…");
+    const reply = await replyToComment({
+      config,
+      repoDir: clone.dir,
+      threadMessages,
+      filePath,
+      lineNumber,
+      diffContext,
+      mrTitle: mr.title,
+      mrUrl: mr.url,
+    });
+
+    if (!reply) {
+      console.log("[review] Empty reply from Copilot, skipping.");
+      return;
+    }
+
+    // ─── Post reply to the discussion ────────────────────────────────────
+    console.log("[review] Posting reply to discussion…");
+    await gitlab.replyToDiscussion(projectId, mrIid, discussionId, reply);
+    console.log("[review] Reply posted successfully.");
+  } catch (err) {
+    console.error("[review] Comment reply failed:", err);
+
+    // Attempt to notify the discussion
+    try {
+      await gitlab.replyToDiscussion(
+        projectId,
+        mrIid,
+        discussionId,
+        `⚠️ Failed to generate a reply. Check the CI job log.\n\n` +
+        `\`\`\`\n${err instanceof Error ? err.message : String(err)}\n\`\`\``,
+      );
+    } catch {
+      // ignore
+    }
+
+    process.exitCode = 1;
+  } finally {
+    if (cleanup) {
+      try {
+        await cleanup();
+      } catch (cleanupErr) {
+        console.warn("[review] Clone cleanup failed:", cleanupErr);
+      }
+    }
+  }
+}
+
+// ─── MR Review Handler ─────────────────────────────────────────────────────
+
+async function handleMergeRequestReview(
+  payload: MergeRequestWebhookPayload,
+  config: ReturnType<typeof loadConfig>,
+): Promise<void> {
   const projectId = payload.project.id;
   const mrIid = payload.object_attributes.iid;
   const mrTitle = payload.object_attributes.title;

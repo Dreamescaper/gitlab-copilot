@@ -104,6 +104,25 @@ var GitLabClient = class {
     );
   }
   /**
+   * Get all notes in a specific discussion thread.
+   */
+  async getDiscussionNotes(projectId, mrIid, discussionId) {
+    return this.request(
+      "GET",
+      `/projects/${projectId}/merge_requests/${mrIid}/discussions/${discussionId}/notes`
+    );
+  }
+  /**
+   * Post a reply to an existing discussion thread.
+   */
+  async replyToDiscussion(projectId, mrIid, discussionId, body) {
+    await this.request(
+      "POST",
+      `/projects/${projectId}/merge_requests/${mrIid}/discussions/${discussionId}/notes`,
+      { body }
+    );
+  }
+  /**
    * Get existing notes (general comments) on a merge request.
    */
   async getMergeRequestNotes(projectId, mrIid) {
@@ -523,8 +542,147 @@ The repository contains an \`agents.md\` file with additional instructions for A
     throw err;
   }
 }
+var COMMENT_REPLY_SYSTEM_PROMPT = `You are an expert developer assistant responding to a comment on a GitLab Merge Request.
+
+You will be given a discussion thread (all messages in order) and optionally the diff context for the file being discussed. The full repository source code is available in your working directory.
+
+## Workflow
+
+1. Read the full discussion thread to understand the context and what is being asked.
+2. If code is being discussed, read the relevant files from the repository.
+3. Provide a helpful, specific, and actionable response.
+
+## Rules
+
+- Be concise but thorough. Answer the question directly.
+- If suggesting code changes, provide the actual code.
+- If the question is about a specific part of the code, reference the file and line numbers.
+- Use markdown formatting for readability.
+- Do NOT output JSON \u2014 just write a natural language response (with code blocks if needed).
+- Do NOT repeat the question or the thread \u2014 just provide your answer.
+
+## Code Suggestions
+
+When the discussion is on a specific file/line (inline diff discussion) and you want to suggest a code change, use GitLab's suggestion syntax. This renders as a one-click "Apply suggestion" button in the GitLab UI.
+
+**Single-line replacement** (replaces the line the discussion is attached to):
+\`\`\`suggestion
+replacement code here
+\`\`\`
+
+**Multi-line replacement** (replaces a range of lines around the discussion line):
+Use the \`:-N+M\` syntax after "suggestion", where N is the number of lines BEFORE the discussion line, and M is the number of lines AFTER it.
+For example, to replace 3 lines before and 1 line after the comment line:
+\`\`\`suggestion:-3+1
+replacement code for all 5 lines
+\`\`\`
+
+Rules for suggestions:
+- Only use suggestion blocks when the discussion is on specific code (file/line info is provided).
+- The suggestion block replaces entire lines \u2014 include the complete replacement, not just the changed parts.
+- You can have multiple suggestion blocks in one reply if needed.
+- Outside of suggestion blocks, explain your reasoning in natural language.
+- If the discussion is a general MR comment (not on a specific line), use regular code blocks instead.`;
+async function replyToComment(opts) {
+  const { config, repoDir } = opts;
+  const { copilotInstructions, agentsInstructions } = await loadProjectInstructions(repoDir);
+  let systemPrompt = COMMENT_REPLY_SYSTEM_PROMPT;
+  if (copilotInstructions) {
+    systemPrompt += `
+
+## Project-Specific Instructions (copilot-instructions.md)
+
+` + copilotInstructions;
+  }
+  if (agentsInstructions) {
+    systemPrompt += `
+
+## Agent Instructions (agents.md)
+
+` + agentsInstructions;
+  }
+  const client = new CopilotClient({
+    githubToken: config.githubToken
+  });
+  try {
+    const session = await client.createSession({
+      model: config.copilotModel,
+      workingDirectory: repoDir,
+      systemMessage: {
+        mode: "append",
+        content: systemPrompt
+      },
+      onPermissionRequest: async () => ({ kind: "approved" })
+    });
+    console.log(`[reviewer] Comment reply session created with model: ${config.copilotModel}`);
+    let prompt = `# Merge Request: ${opts.mrTitle}
+**URL**: ${opts.mrUrl}
+
+`;
+    if (opts.filePath) {
+      prompt += `## File Context
+**File**: \`${opts.filePath}\``;
+      if (opts.lineNumber) {
+        prompt += ` (line ${opts.lineNumber})`;
+      }
+      prompt += "\n\n";
+    }
+    if (opts.diffContext) {
+      prompt += `## Diff
+\`\`\`diff
+${opts.diffContext}
+\`\`\`
+
+`;
+    }
+    prompt += `## Discussion Thread
+
+`;
+    for (const msg of opts.threadMessages) {
+      prompt += `**${msg.author}** (${msg.createdAt}):
+${msg.body}
+
+---
+
+`;
+    }
+    prompt += `Please respond to the latest message in this discussion thread. Provide a helpful and specific answer.`;
+    console.log(
+      `[reviewer] Sending comment reply request (${opts.threadMessages.length} messages in thread, prompt: ${prompt.length} chars)`
+    );
+    const response = await session.sendAndWait({
+      prompt
+    }, 3e5);
+    const responseContent = response?.data?.content ?? "";
+    console.log(`[reviewer] Got reply (${responseContent.length} chars)`);
+    await session.destroy();
+    await client.stop();
+    return responseContent.trim();
+  } catch (err) {
+    try {
+      await client.stop();
+    } catch {
+    }
+    throw err;
+  }
+}
 
 // src/webhook.ts
+function classifyWebhookEvent(payload, botUsername) {
+  if (payload.object_kind === "merge_request") {
+    if (shouldTriggerReview(payload, botUsername)) {
+      return { type: "review", payload };
+    }
+    return { type: "ignore", reason: "MR event did not match trigger conditions" };
+  }
+  if (payload.object_kind === "note") {
+    if (shouldRespondToComment(payload, botUsername)) {
+      return { type: "comment_reply", payload };
+    }
+    return { type: "ignore", reason: "Note event did not match reply conditions" };
+  }
+  return { type: "ignore", reason: `Unhandled event type: ${payload.object_kind}` };
+}
 function shouldTriggerReview(payload, botUsername) {
   if (payload.object_kind !== "merge_request") {
     console.log("[webhook] Ignoring non-MR event:", payload.object_kind);
@@ -586,6 +744,32 @@ function shouldTriggerReview(payload, botUsername) {
   console.log("[webhook] No trigger conditions met (not bot added, and not draft\u2192non-draft transition)");
   return false;
 }
+function shouldRespondToComment(payload, botUsername) {
+  if (payload.object_kind !== "note") {
+    return false;
+  }
+  if (payload.object_attributes.noteable_type !== "MergeRequest") {
+    console.log("[webhook] Ignoring note on non-MR:", payload.object_attributes.noteable_type);
+    return false;
+  }
+  if (!payload.merge_request) {
+    console.log("[webhook] Note event missing merge_request context");
+    return false;
+  }
+  if (payload.user.username === botUsername) {
+    console.log("[webhook] Ignoring note from bot itself");
+    return false;
+  }
+  const mentionPattern = `@${botUsername}`;
+  if (!payload.object_attributes.note.includes(mentionPattern)) {
+    console.log(`[webhook] Note does not mention ${mentionPattern}`);
+    return false;
+  }
+  console.log(
+    `[webhook] Comment reply triggered: @${botUsername} mentioned in discussion ${payload.object_attributes.discussion_id} on MR !${payload.merge_request.iid}`
+  );
+  return true;
+}
 
 // src/index.ts
 async function loadTriggerPayload() {
@@ -602,13 +786,107 @@ async function main() {
   console.log("[review] Starting Copilot code review\u2026");
   const payload = await loadTriggerPayload();
   console.log(
-    `[review] Received ${payload.object_kind} event (action: ${payload.object_attributes?.action ?? "unknown"})`
+    `[review] Received ${payload.object_kind} event`
   );
   const config = loadConfig();
-  if (!shouldTriggerReview(payload, config.gitlabBotUsername)) {
-    console.log("[review] Event does not require a review \u2013 exiting.");
+  const event = classifyWebhookEvent(payload, config.gitlabBotUsername);
+  if (event.type === "ignore") {
+    console.log(`[review] Event ignored: ${event.reason}`);
     return;
   }
+  if (event.type === "comment_reply") {
+    await handleCommentReply(event.payload, config);
+    return;
+  }
+  await handleMergeRequestReview(event.payload, config);
+}
+async function handleCommentReply(payload, config) {
+  const projectId = payload.project.id;
+  const mr = payload.merge_request;
+  const mrIid = mr.iid;
+  const discussionId = payload.object_attributes.discussion_id;
+  const httpUrl = payload.project.http_url;
+  const sourceBranch = mr.source_branch;
+  console.log(
+    `[review] Responding to comment in discussion ${discussionId} on MR !${mrIid} in ${payload.project.path_with_namespace}`
+  );
+  const gitlab = new GitLabClient(config);
+  let cleanup;
+  try {
+    console.log("[review] Fetching discussion thread\u2026");
+    const notes = await gitlab.getDiscussionNotes(projectId, mrIid, discussionId);
+    console.log(`[review] Thread has ${notes.length} message(s)`);
+    const threadMessages = notes.map((note) => ({
+      author: note.author.username,
+      body: note.body,
+      createdAt: note.created_at
+    }));
+    const position = payload.object_attributes.position;
+    const filePath = position?.new_path;
+    const lineNumber = position?.new_line ?? void 0;
+    let diffContext;
+    if (filePath) {
+      try {
+        const diffVersion = await gitlab.getLatestDiffs(projectId, mrIid);
+        const diffFile = diffVersion.diffs.find(
+          (d) => d.new_path === filePath || d.old_path === filePath
+        );
+        if (diffFile) {
+          diffContext = diffFile.diff;
+        }
+      } catch {
+        console.warn("[review] Could not fetch diff context, continuing without it");
+      }
+    }
+    console.log("[review] Cloning target repository\u2026");
+    const clone = await cloneRepository(httpUrl, sourceBranch, config.gitlabToken);
+    cleanup = clone.cleanup;
+    console.log(`[review] Cloned to ${clone.dir}`);
+    console.log("[review] Generating Copilot reply\u2026");
+    const reply = await replyToComment({
+      config,
+      repoDir: clone.dir,
+      threadMessages,
+      filePath,
+      lineNumber,
+      diffContext,
+      mrTitle: mr.title,
+      mrUrl: mr.url
+    });
+    if (!reply) {
+      console.log("[review] Empty reply from Copilot, skipping.");
+      return;
+    }
+    console.log("[review] Posting reply to discussion\u2026");
+    await gitlab.replyToDiscussion(projectId, mrIid, discussionId, reply);
+    console.log("[review] Reply posted successfully.");
+  } catch (err) {
+    console.error("[review] Comment reply failed:", err);
+    try {
+      await gitlab.replyToDiscussion(
+        projectId,
+        mrIid,
+        discussionId,
+        `\u26A0\uFE0F Failed to generate a reply. Check the CI job log.
+
+\`\`\`
+${err instanceof Error ? err.message : String(err)}
+\`\`\``
+      );
+    } catch {
+    }
+    process.exitCode = 1;
+  } finally {
+    if (cleanup) {
+      try {
+        await cleanup();
+      } catch (cleanupErr) {
+        console.warn("[review] Clone cleanup failed:", cleanupErr);
+      }
+    }
+  }
+}
+async function handleMergeRequestReview(payload, config) {
   const projectId = payload.project.id;
   const mrIid = payload.object_attributes.iid;
   const mrTitle = payload.object_attributes.title;

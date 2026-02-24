@@ -94,6 +94,55 @@ export interface MergeRequestWebhookPayload {
   changes: MergeRequestChanges;
 }
 
+// ─── Note (Comment) Webhook Types ───────────────────────────────────────────
+
+export interface NoteAttributes {
+  id: number;
+  note: string;
+  noteable_type: "MergeRequest" | "Issue" | "Commit" | "Snippet";
+  author_id: number;
+  created_at: string;
+  updated_at: string;
+  position?: {
+    base_sha: string;
+    start_sha: string;
+    head_sha: string;
+    old_path: string;
+    new_path: string;
+    position_type: string;
+    old_line?: number | null;
+    new_line?: number | null;
+  };
+  discussion_id: string;
+  type: string | null;
+  noteable_id: number;
+  url: string;
+}
+
+export interface NoteWebhookMergeRequest {
+  id: number;
+  iid: number;
+  title: string;
+  description: string;
+  source_branch: string;
+  target_branch: string;
+  state: string;
+  source: GitLabProject;
+  target: GitLabProject;
+  url: string;
+}
+
+export interface NoteWebhookPayload {
+  object_kind: "note";
+  event_type: "note";
+  user: GitLabUser;
+  project: GitLabProject;
+  object_attributes: NoteAttributes;
+  merge_request?: NoteWebhookMergeRequest;
+}
+
+export type WebhookPayload = MergeRequestWebhookPayload | NoteWebhookPayload;
+
 // ─── GitLab API Response Types ──────────────────────────────────────────────
 
 export interface MergeRequestDiffVersion {

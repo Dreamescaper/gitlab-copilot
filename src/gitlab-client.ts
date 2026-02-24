@@ -123,6 +123,36 @@ export class GitLabClient {
   }
 
   /**
+   * Get all notes in a specific discussion thread.
+   */
+  async getDiscussionNotes(
+    projectId: number,
+    mrIid: number,
+    discussionId: string,
+  ): Promise<Array<{ id: number; body: string; author: { id: number; name: string; username: string }; created_at: string }>> {
+    return this.request<Array<{ id: number; body: string; author: { id: number; name: string; username: string }; created_at: string }>>(
+      "GET",
+      `/projects/${projectId}/merge_requests/${mrIid}/discussions/${discussionId}/notes`,
+    );
+  }
+
+  /**
+   * Post a reply to an existing discussion thread.
+   */
+  async replyToDiscussion(
+    projectId: number,
+    mrIid: number,
+    discussionId: string,
+    body: string,
+  ): Promise<void> {
+    await this.request(
+      "POST",
+      `/projects/${projectId}/merge_requests/${mrIid}/discussions/${discussionId}/notes`,
+      { body },
+    );
+  }
+
+  /**
    * Get existing notes (general comments) on a merge request.
    */
   async getMergeRequestNotes(
