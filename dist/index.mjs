@@ -75,12 +75,20 @@ var GitLabClient = class {
       body: body ? JSON.stringify(body) : void 0
     });
     if (!response.ok) {
-      const text = await response.text();
+      const text2 = await response.text();
       throw new Error(
-        `GitLab API error: ${response.status} ${response.statusText} \u2013 ${text}`
+        `GitLab API error: ${response.status} ${response.statusText} \u2013 ${text2}`
       );
     }
-    return response.json();
+    const contentLength = response.headers.get("content-length");
+    if (response.status === 204 || contentLength === "0") {
+      return void 0;
+    }
+    const text = await response.text();
+    if (!text) {
+      return void 0;
+    }
+    return JSON.parse(text);
   }
   // ─── Merge Request Diffs ──────────────────────────────────────────────────
   /**

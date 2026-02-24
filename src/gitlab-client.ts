@@ -79,7 +79,18 @@ export class GitLabClient {
       );
     }
 
-    return response.json() as Promise<T>;
+    // Some endpoints (e.g. bulk_publish) return 204 No Content
+    const contentLength = response.headers.get("content-length");
+    if (response.status === 204 || contentLength === "0") {
+      return undefined as T;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      return undefined as T;
+    }
+
+    return JSON.parse(text) as T;
   }
 
   // ─── Merge Request Diffs ──────────────────────────────────────────────────
