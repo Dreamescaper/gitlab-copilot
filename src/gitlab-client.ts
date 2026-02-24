@@ -7,6 +7,42 @@ import type {
   ReviewComment,
 } from "./types.js";
 
+// ─── Diff line parser ───────────────────────────────────────────────────────
+
+/**
+ * Extract the set of new-side line numbers that appear in a unified diff.
+ * These are the only lines GitLab will accept for inline comments.
+ */
+function extractNewLinesFromDiff(diff: string): Set<number> {
+  const lines = new Set<number>();
+  let currentNewLine = 0;
+
+  for (const line of diff.split("\n")) {
+    // Hunk header: @@ -oldStart,oldCount +newStart,newCount @@
+    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunkMatch) {
+      currentNewLine = parseInt(hunkMatch[1]!, 10);
+      continue;
+    }
+
+    if (currentNewLine === 0) continue; // before first hunk
+
+    if (line.startsWith("+")) {
+      // Added line — present on new side
+      lines.add(currentNewLine);
+      currentNewLine++;
+    } else if (line.startsWith("-")) {
+      // Removed line — only on old side, don't increment new line counter
+    } else {
+      // Context line — present on both sides
+      lines.add(currentNewLine);
+      currentNewLine++;
+    }
+  }
+
+  return lines;
+}
+
 /**
  * GitLab REST API client for merge request operations.
  */
@@ -250,6 +286,25 @@ export class GitLabClient {
             `[gitlab] File "${comment.file}" not found in diff, posting as general note`,
           );
           // Skip if comment already exists as a general note
+          if (commentExists(comment.file, comment.line, comment.body)) {
+            skipped++;
+            continue;
+          }
+          await this.postMergeRequestNote(
+            projectId,
+            mrIid,
+            `**${comment.file}:${comment.line}** – ${comment.body}`,
+          );
+          posted++;
+          continue;
+        }
+
+        // Verify the comment line exists in the diff hunks
+        const diffLines = extractNewLinesFromDiff(diffFile.diff);
+        if (!diffLines.has(comment.line)) {
+          console.warn(
+            `[gitlab] Line ${comment.line} not in diff hunks for "${comment.file}", posting as general note`,
+          );
           if (commentExists(comment.file, comment.line, comment.body)) {
             skipped++;
             continue;

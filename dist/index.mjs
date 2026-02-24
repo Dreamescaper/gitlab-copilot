@@ -35,6 +35,27 @@ function loadConfig() {
 }
 
 // src/gitlab-client.ts
+function extractNewLinesFromDiff(diff) {
+  const lines = /* @__PURE__ */ new Set();
+  let currentNewLine = 0;
+  for (const line of diff.split("\n")) {
+    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunkMatch) {
+      currentNewLine = parseInt(hunkMatch[1], 10);
+      continue;
+    }
+    if (currentNewLine === 0) continue;
+    if (line.startsWith("+")) {
+      lines.add(currentNewLine);
+      currentNewLine++;
+    } else if (line.startsWith("-")) {
+    } else {
+      lines.add(currentNewLine);
+      currentNewLine++;
+    }
+  }
+  return lines;
+}
 var GitLabClient = class {
   baseUrl;
   token;
@@ -198,6 +219,23 @@ var GitLabClient = class {
         if (!diffFile) {
           console.warn(
             `[gitlab] File "${comment.file}" not found in diff, posting as general note`
+          );
+          if (commentExists(comment.file, comment.line, comment.body)) {
+            skipped++;
+            continue;
+          }
+          await this.postMergeRequestNote(
+            projectId,
+            mrIid,
+            `**${comment.file}:${comment.line}** \u2013 ${comment.body}`
+          );
+          posted++;
+          continue;
+        }
+        const diffLines = extractNewLinesFromDiff(diffFile.diff);
+        if (!diffLines.has(comment.line)) {
+          console.warn(
+            `[gitlab] Line ${comment.line} not in diff hunks for "${comment.file}", posting as general note`
           );
           if (commentExists(comment.file, comment.line, comment.body)) {
             skipped++;
