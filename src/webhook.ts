@@ -6,12 +6,15 @@ import type {
 /**
  * Determine whether this webhook event should trigger a review.
  *
- * Criteria:
- *   1. object_kind === "merge_request"
- *   2. action is "update" (reviewer list changed)
- *   3. The bot service account was ADDED to the reviewer list
- *      (present in `changes.reviewers.current` but not in `changes.reviewers.previous`)
- *   4. MR is not a draft / WIP
+ * Triggers in two cases:
+ *   1. Bot is NEWLY ADDED as a reviewer:
+ *      - Must be an "update" action
+ *      - changes.reviewers shows bot added (current but not previous)
+ *      - MR is not a draft
+ *   
+ *   2. MR transitions from Draft → non-Draft AND bot is already reviewer:
+ *      - changes.draft or changes.work_in_progress shows transition
+ *      - Bot is in current reviewers list
  */
 export function shouldTriggerReview(
   payload: MergeRequestWebhookPayload,
@@ -23,20 +26,14 @@ export function shouldTriggerReview(
     return false;
   }
 
-  // Must be an update action (reviewer change fires as "update")
+  // Must be an update action
   const action = payload.object_attributes.action;
   if (action !== "update") {
     console.log("[webhook] Ignoring MR action:", action);
     return false;
   }
 
-  // Skip drafts
-  if (payload.object_attributes.draft || payload.object_attributes.work_in_progress) {
-    console.log("[webhook] Ignoring draft MR");
-    return false;
-  }
-
-  // Check if the bot was added as reviewer
+  // Find bot in current reviewers
   const botUser = payload.reviewers?.find(
     (r: GitLabUser) => r.username === botUsername,
   );
@@ -48,11 +45,15 @@ export function shouldTriggerReview(
     return false;
   }
 
-  // Check if reviewers actually changed and bot was newly added
-  // GitLab webhook sends changes.reviewers (with full user objects), not reviewer_ids
+  // Skip if MR is currently a draft
+  if (payload.object_attributes.draft || payload.object_attributes.work_in_progress) {
+    console.log("[webhook] Ignoring draft MR");
+    return false;
+  }
+
+  // Check CASE 1: Bot was newly added as a reviewer
   const reviewerChanges = payload.changes?.reviewers ?? payload.changes?.reviewer_ids;
   if (reviewerChanges) {
-    // Extract IDs from reviewer objects if needed
     const previousIds = Array.isArray(reviewerChanges.previous)
       ? reviewerChanges.previous.map((r: any) => typeof r === 'number' ? r : r.id)
       : [];
@@ -63,15 +64,45 @@ export function shouldTriggerReview(
     const wasAlreadyReviewer = previousIds.includes(botUser.id);
     const isNowReviewer = currentIds.includes(botUser.id);
 
-    if (wasAlreadyReviewer || !isNowReviewer) {
-      console.log("[webhook] Bot was not newly added as reviewer");
-      return false;
+    if (isNowReviewer && !wasAlreadyReviewer) {
+      console.log(
+        `[webhook] Review triggered: Bot newly added as reviewer for MR !${payload.object_attributes.iid} ` +
+        `in ${payload.project.path_with_namespace}`,
+      );
+      return true;
     }
   }
 
-  console.log(
-    `[webhook] Review triggered for MR !${payload.object_attributes.iid} ` +
-    `in ${payload.project.path_with_namespace}`,
-  );
-  return true;
+  // Check CASE 2: MR transitioned from Draft → non-Draft with bot already as reviewer
+  const draftChanges = payload.changes?.draft;
+  const wipChanges = payload.changes?.work_in_progress;
+  
+  if (draftChanges) {
+    const wasDraft = draftChanges.previous === true;
+    const isNowDraft = draftChanges.current === true;
+    
+    if (wasDraft && !isNowDraft) {
+      console.log(
+        `[webhook] Review triggered: Draft status changed for MR !${payload.object_attributes.iid} ` +
+        `in ${payload.project.path_with_namespace}`,
+      );
+      return true;
+    }
+  }
+
+  if (wipChanges) {
+    const wasWip = wipChanges.previous === true;
+    const isNowWip = wipChanges.current === true;
+    
+    if (wasWip && !isNowWip) {
+      console.log(
+        `[webhook] Review triggered: WIP status changed for MR !${payload.object_attributes.iid} ` +
+        `in ${payload.project.path_with_namespace}`,
+      );
+      return true;
+    }
+  }
+
+  console.log("[webhook] No trigger conditions met (not bot added, and not draft→non-draft transition)");
+  return false;
 }

@@ -73,6 +73,14 @@ export interface MergeRequestChanges {
     previous: GitLabUser[];
     current: GitLabUser[];
   };
+  draft?: {
+    previous: boolean;
+    current: boolean;
+  };
+  work_in_progress?: {
+    previous: boolean;
+    current: boolean;
+  };
   [key: string]: unknown;
 }
 

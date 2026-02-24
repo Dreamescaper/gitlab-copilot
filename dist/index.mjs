@@ -535,10 +535,6 @@ function shouldTriggerReview(payload, botUsername) {
     console.log("[webhook] Ignoring MR action:", action);
     return false;
   }
-  if (payload.object_attributes.draft || payload.object_attributes.work_in_progress) {
-    console.log("[webhook] Ignoring draft MR");
-    return false;
-  }
   const botUser = payload.reviewers?.find(
     (r) => r.username === botUsername
   );
@@ -548,21 +544,47 @@ function shouldTriggerReview(payload, botUsername) {
     console.log(`[webhook] Available usernames: ${payload.reviewers?.map((r) => `"${r.username}"`).join(", ") ?? "none"}`);
     return false;
   }
+  if (payload.object_attributes.draft || payload.object_attributes.work_in_progress) {
+    console.log("[webhook] Ignoring draft MR");
+    return false;
+  }
   const reviewerChanges = payload.changes?.reviewers ?? payload.changes?.reviewer_ids;
   if (reviewerChanges) {
     const previousIds = Array.isArray(reviewerChanges.previous) ? reviewerChanges.previous.map((r) => typeof r === "number" ? r : r.id) : [];
     const currentIds = Array.isArray(reviewerChanges.current) ? reviewerChanges.current.map((r) => typeof r === "number" ? r : r.id) : [];
     const wasAlreadyReviewer = previousIds.includes(botUser.id);
     const isNowReviewer = currentIds.includes(botUser.id);
-    if (wasAlreadyReviewer || !isNowReviewer) {
-      console.log("[webhook] Bot was not newly added as reviewer");
-      return false;
+    if (isNowReviewer && !wasAlreadyReviewer) {
+      console.log(
+        `[webhook] Review triggered: Bot newly added as reviewer for MR !${payload.object_attributes.iid} in ${payload.project.path_with_namespace}`
+      );
+      return true;
     }
   }
-  console.log(
-    `[webhook] Review triggered for MR !${payload.object_attributes.iid} in ${payload.project.path_with_namespace}`
-  );
-  return true;
+  const draftChanges = payload.changes?.draft;
+  const wipChanges = payload.changes?.work_in_progress;
+  if (draftChanges) {
+    const wasDraft = draftChanges.previous === true;
+    const isNowDraft = draftChanges.current === true;
+    if (wasDraft && !isNowDraft) {
+      console.log(
+        `[webhook] Review triggered: Draft status changed for MR !${payload.object_attributes.iid} in ${payload.project.path_with_namespace}`
+      );
+      return true;
+    }
+  }
+  if (wipChanges) {
+    const wasWip = wipChanges.previous === true;
+    const isNowWip = wipChanges.current === true;
+    if (wasWip && !isNowWip) {
+      console.log(
+        `[webhook] Review triggered: WIP status changed for MR !${payload.object_attributes.iid} in ${payload.project.path_with_namespace}`
+      );
+      return true;
+    }
+  }
+  console.log("[webhook] No trigger conditions met (not bot added, and not draft\u2192non-draft transition)");
+  return false;
 }
 
 // src/index.ts
