@@ -170,12 +170,46 @@ var GitLabClient = class {
       { body, position }
     );
   }
+  // ─── Draft Notes (Review Submission) ──────────────────────────────────────
   /**
-   * Post all review comments to a merge request.
+   * Create a general (non-inline) draft note on a merge request.
+   */
+  async createDraftNote(projectId, mrIid, note) {
+    return this.request(
+      "POST",
+      `/projects/${projectId}/merge_requests/${mrIid}/draft_notes`,
+      { note }
+    );
+  }
+  /**
+   * Create an inline diff draft note on a merge request.
+   */
+  async createDraftDiffNote(projectId, mrIid, note, position) {
+    return this.request(
+      "POST",
+      `/projects/${projectId}/merge_requests/${mrIid}/draft_notes`,
+      { note, position }
+    );
+  }
+  /**
+   * Publish all pending draft notes for a merge request.
+   * This is GitLab's equivalent of "Submit Review" with the "Comment" action.
+   */
+  async publishAllDraftNotes(projectId, mrIid) {
+    await this.request(
+      "POST",
+      `/projects/${projectId}/merge_requests/${mrIid}/draft_notes/bulk_publish`
+    );
+  }
+  /**
+   * Post all review comments to a merge request using draft notes,
+   * then bulk-publish them as a single "Submit Review" (Comment action).
    *
    * - Fetches existing discussions/notes to avoid duplicates
-   * - Inline comments are posted as diff discussions on the specific file/line.
-   * - A summary note is posted as a regular MR note.
+   * - Inline comments are created as draft diff notes.
+   * - Comments that can't be placed inline fall back to general draft notes.
+   * - A summary draft note is always included.
+   * - All drafts are published in one shot via bulk_publish.
    */
   async postReview(projectId, mrIid, summary, comments, diffVersion) {
     let posted = 0;
@@ -213,51 +247,6 @@ var GitLabClient = class {
           skipped++;
           continue;
         }
-        const diffFile = diffVersion.diffs.find(
-          (d) => d.new_path === comment.file || d.old_path === comment.file
-        );
-        if (!diffFile) {
-          console.warn(
-            `[gitlab] File "${comment.file}" not found in diff, posting as general note`
-          );
-          if (commentExists(comment.file, comment.line, comment.body)) {
-            skipped++;
-            continue;
-          }
-          await this.postMergeRequestNote(
-            projectId,
-            mrIid,
-            `**${comment.file}:${comment.line}** \u2013 ${comment.body}`
-          );
-          posted++;
-          continue;
-        }
-        const diffLines = extractNewLinesFromDiff(diffFile.diff);
-        if (!diffLines.has(comment.line)) {
-          console.warn(
-            `[gitlab] Line ${comment.line} not in diff hunks for "${comment.file}", posting as general note`
-          );
-          if (commentExists(comment.file, comment.line, comment.body)) {
-            skipped++;
-            continue;
-          }
-          await this.postMergeRequestNote(
-            projectId,
-            mrIid,
-            `**${comment.file}:${comment.line}** \u2013 ${comment.body}`
-          );
-          posted++;
-          continue;
-        }
-        const position = {
-          position_type: "text",
-          base_sha: diffVersion.base_commit_sha,
-          head_sha: diffVersion.head_commit_sha,
-          start_sha: diffVersion.start_commit_sha,
-          old_path: diffFile.old_path,
-          new_path: diffFile.new_path,
-          new_line: comment.line
-        };
         const severityIcon = comment.severity === "critical" ? "\u{1F534}" : comment.severity === "warning" ? "\u{1F7E1}" : "\u2139\uFE0F";
         let commentBody = `${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`;
         if (comment.suggestion) {
@@ -273,7 +262,44 @@ var GitLabClient = class {
 ${comment.suggestion}
 \`\`\``;
         }
-        await this.postDiffDiscussion(
+        const diffFile = diffVersion.diffs.find(
+          (d) => d.new_path === comment.file || d.old_path === comment.file
+        );
+        if (!diffFile) {
+          console.warn(
+            `[gitlab] File "${comment.file}" not found in diff, creating as general draft note`
+          );
+          await this.createDraftNote(
+            projectId,
+            mrIid,
+            `**${comment.file}:${comment.line}** \u2013 ${commentBody}`
+          );
+          posted++;
+          continue;
+        }
+        const diffLines = extractNewLinesFromDiff(diffFile.diff);
+        if (!diffLines.has(comment.line)) {
+          console.warn(
+            `[gitlab] Line ${comment.line} not in diff hunks for "${comment.file}", creating as general draft note`
+          );
+          await this.createDraftNote(
+            projectId,
+            mrIid,
+            `**${comment.file}:${comment.line}** \u2013 ${commentBody}`
+          );
+          posted++;
+          continue;
+        }
+        const position = {
+          position_type: "text",
+          base_sha: diffVersion.base_commit_sha,
+          head_sha: diffVersion.head_commit_sha,
+          start_sha: diffVersion.start_commit_sha,
+          old_path: diffFile.old_path,
+          new_path: diffFile.new_path,
+          new_line: comment.line
+        };
+        await this.createDraftDiffNote(
           projectId,
           mrIid,
           commentBody,
@@ -281,10 +307,10 @@ ${comment.suggestion}
         );
         posted++;
       } catch (err) {
-        console.error(`[gitlab] Failed to post comment on ${comment.file}:${comment.line}:`, err);
+        console.error(`[gitlab] Failed to create draft note for ${comment.file}:${comment.line}:`, err);
         failed++;
         try {
-          await this.postMergeRequestNote(
+          await this.createDraftNote(
             projectId,
             mrIid,
             `**${comment.file}:${comment.line}** \u2013 ${comment.body}`
@@ -295,7 +321,10 @@ ${comment.suggestion}
         }
       }
     }
-    await this.postMergeRequestNote(projectId, mrIid, summary);
+    await this.createDraftNote(projectId, mrIid, summary);
+    console.log(`[gitlab] Publishing review (${posted} draft note(s))...`);
+    await this.publishAllDraftNotes(projectId, mrIid);
+    console.log("[gitlab] Review submitted.");
     return { posted, failed, skipped };
   }
 };

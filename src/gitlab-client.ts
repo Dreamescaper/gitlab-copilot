@@ -217,12 +217,62 @@ export class GitLabClient {
     );
   }
 
+  // ─── Draft Notes (Review Submission) ──────────────────────────────────────
+
   /**
-   * Post all review comments to a merge request.
+   * Create a general (non-inline) draft note on a merge request.
+   */
+  async createDraftNote(
+    projectId: number,
+    mrIid: number,
+    note: string,
+  ): Promise<{ id: number }> {
+    return this.request<{ id: number }>(
+      "POST",
+      `/projects/${projectId}/merge_requests/${mrIid}/draft_notes`,
+      { note },
+    );
+  }
+
+  /**
+   * Create an inline diff draft note on a merge request.
+   */
+  async createDraftDiffNote(
+    projectId: number,
+    mrIid: number,
+    note: string,
+    position: DiffPosition,
+  ): Promise<{ id: number }> {
+    return this.request<{ id: number }>(
+      "POST",
+      `/projects/${projectId}/merge_requests/${mrIid}/draft_notes`,
+      { note, position },
+    );
+  }
+
+  /**
+   * Publish all pending draft notes for a merge request.
+   * This is GitLab's equivalent of "Submit Review" with the "Comment" action.
+   */
+  async publishAllDraftNotes(
+    projectId: number,
+    mrIid: number,
+  ): Promise<void> {
+    await this.request(
+      "POST",
+      `/projects/${projectId}/merge_requests/${mrIid}/draft_notes/bulk_publish`,
+    );
+  }
+
+  /**
+   * Post all review comments to a merge request using draft notes,
+   * then bulk-publish them as a single "Submit Review" (Comment action).
    *
    * - Fetches existing discussions/notes to avoid duplicates
-   * - Inline comments are posted as diff discussions on the specific file/line.
-   * - A summary note is posted as a regular MR note.
+   * - Inline comments are created as draft diff notes.
+   * - Comments that can't be placed inline fall back to general draft notes.
+   * - A summary draft note is always included.
+   * - All drafts are published in one shot via bulk_publish.
    */
   async postReview(
     projectId: number,
@@ -248,7 +298,6 @@ export class GitLabClient {
 
     // Check if a comment already exists for a given file/line/body
     const commentExists = (file: string, line: number, body: string): boolean => {
-      // Check discussions for inline comments on this file/line
       const fileLineKey = `${file}:${line}`;
       for (const discussion of existingDiscussions) {
         for (const note of discussion.notes) {
@@ -257,7 +306,6 @@ export class GitLabClient {
           }
         }
       }
-      // Check general notes
       for (const note of existingNotes) {
         if (note.body.includes(fileLineKey) && note.body.includes(body)) {
           return true;
@@ -266,14 +314,30 @@ export class GitLabClient {
       return false;
     };
 
-    // Post inline comments
+    // Create inline draft notes
     for (const comment of comments) {
       try {
-        // Skip if comment already exists
+        // Skip duplicates
         if (commentExists(comment.file, comment.line, comment.body)) {
           console.log(`[gitlab] Skipping duplicate comment on ${comment.file}:${comment.line}`);
           skipped++;
           continue;
+        }
+
+        const severityIcon =
+          comment.severity === "critical" ? "🔴" :
+          comment.severity === "warning" ? "🟡" : "ℹ️";
+
+        // Format comment body with suggestion if available
+        let commentBody = `${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`;
+        if (comment.suggestion) {
+          let rangeOffset = "";
+          if (comment.startLine !== undefined && comment.endLine !== undefined) {
+            const beforeOffset = comment.line - comment.startLine;
+            const afterOffset = comment.endLine - comment.line;
+            rangeOffset = `:${beforeOffset > 0 ? "-" : ""}${Math.abs(beforeOffset)}+${afterOffset}`;
+          }
+          commentBody += `\n\n\`\`\`suggestion${rangeOffset}\n${comment.suggestion}\n\`\`\``;
         }
 
         // Find the matching diff file
@@ -283,17 +347,12 @@ export class GitLabClient {
 
         if (!diffFile) {
           console.warn(
-            `[gitlab] File "${comment.file}" not found in diff, posting as general note`,
+            `[gitlab] File "${comment.file}" not found in diff, creating as general draft note`,
           );
-          // Skip if comment already exists as a general note
-          if (commentExists(comment.file, comment.line, comment.body)) {
-            skipped++;
-            continue;
-          }
-          await this.postMergeRequestNote(
+          await this.createDraftNote(
             projectId,
             mrIid,
-            `**${comment.file}:${comment.line}** – ${comment.body}`,
+            `**${comment.file}:${comment.line}** – ${commentBody}`,
           );
           posted++;
           continue;
@@ -303,16 +362,12 @@ export class GitLabClient {
         const diffLines = extractNewLinesFromDiff(diffFile.diff);
         if (!diffLines.has(comment.line)) {
           console.warn(
-            `[gitlab] Line ${comment.line} not in diff hunks for "${comment.file}", posting as general note`,
+            `[gitlab] Line ${comment.line} not in diff hunks for "${comment.file}", creating as general draft note`,
           );
-          if (commentExists(comment.file, comment.line, comment.body)) {
-            skipped++;
-            continue;
-          }
-          await this.postMergeRequestNote(
+          await this.createDraftNote(
             projectId,
             mrIid,
-            `**${comment.file}:${comment.line}** – ${comment.body}`,
+            `**${comment.file}:${comment.line}** – ${commentBody}`,
           );
           posted++;
           continue;
@@ -328,24 +383,7 @@ export class GitLabClient {
           new_line: comment.line,
         };
 
-        const severityIcon =
-          comment.severity === "critical" ? "🔴" :
-          comment.severity === "warning" ? "🟡" : "ℹ️";
-
-        // Format comment body with suggestion if available
-        let commentBody = `${severityIcon} **${comment.severity.toUpperCase()}**: ${comment.body}`;
-        if (comment.suggestion) {
-          // Calculate range offsets for multi-line suggestions
-          let rangeOffset = "";
-          if (comment.startLine !== undefined && comment.endLine !== undefined) {
-            const beforeOffset = comment.line - comment.startLine;
-            const afterOffset = comment.endLine - comment.line;
-            rangeOffset = `:${beforeOffset > 0 ? "-" : ""}${Math.abs(beforeOffset)}+${afterOffset}`;
-          }
-          commentBody += `\n\n\`\`\`suggestion${rangeOffset}\n${comment.suggestion}\n\`\`\``;
-        }
-
-        await this.postDiffDiscussion(
+        await this.createDraftDiffNote(
           projectId,
           mrIid,
           commentBody,
@@ -353,12 +391,12 @@ export class GitLabClient {
         );
         posted++;
       } catch (err) {
-        console.error(`[gitlab] Failed to post comment on ${comment.file}:${comment.line}:`, err);
+        console.error(`[gitlab] Failed to create draft note for ${comment.file}:${comment.line}:`, err);
         failed++;
 
-        // Fallback: post as a general note
+        // Fallback: create as general draft note
         try {
-          await this.postMergeRequestNote(
+          await this.createDraftNote(
             projectId,
             mrIid,
             `**${comment.file}:${comment.line}** – ${comment.body}`,
@@ -371,8 +409,13 @@ export class GitLabClient {
       }
     }
 
-    // Post summary
-    await this.postMergeRequestNote(projectId, mrIid, summary);
+    // Add summary as a general draft note
+    await this.createDraftNote(projectId, mrIid, summary);
+
+    // Publish all draft notes as a single review ("Comment" action)
+    console.log(`[gitlab] Publishing review (${posted} draft note(s))...`);
+    await this.publishAllDraftNotes(projectId, mrIid);
+    console.log("[gitlab] Review submitted.");
 
     return { posted, failed, skipped };
   }
