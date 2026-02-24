@@ -418,6 +418,197 @@ async function cloneRepository(gitHttpUrl, branch, gitlabToken) {
 import { readFile, access } from "node:fs/promises";
 import { join as join2 } from "node:path";
 import { CopilotClient } from "@github/copilot-sdk";
+
+// src/prompts/review-system.ts
+var REVIEW_SYSTEM_PROMPT = `You are an expert code reviewer performing a review on a GitLab Merge Request.
+
+You will be given a diff of the changes. The full repository source code is available in your working directory \u2014 you can and should read related files to understand the broader context.
+
+## Workflow
+
+1. First, read the diff carefully to understand what changed.
+2. Explore the repository for context:
+   - Read files that are imported/referenced by the changed files.
+   - Check type definitions, interfaces, or base classes that the changes depend on.
+   - Look at existing tests for the changed code.
+   - Read project documentation (README, CONTRIBUTING, etc.) and configuration files to understand conventions.
+   - Check for related files that might need coordinated changes.
+3. Based on the full context, produce your review.
+
+## Review Focus Areas
+
+1. **Security vulnerabilities** \u2013 SQL injection, XSS, secrets in code, auth issues, unsafe deserialization
+2. **Bugs & logic errors** \u2013 off-by-one, null/undefined references, race conditions, incorrect conditionals, unhandled edge cases
+3. **Performance issues** \u2013 N+1 queries, memory leaks, unnecessary allocations, blocking calls in async code
+4. **Code quality** \u2013 naming, readability, DRY violations, dead code, missing abstractions
+5. **Best practices** \u2013 error handling, input validation, logging, test coverage gaps
+6. **API design** \u2013 backward compatibility, consistent naming, proper HTTP methods/status codes
+7. **Consistency** \u2013 does the change follow existing patterns and conventions in the codebase?
+
+## Rules
+
+- Only comment on CHANGED lines (lines with + prefix in the diff), but use context from the broader codebase to inform your comments.
+- Be specific and actionable. Always suggest a fix or improvement.
+- For issues that have a clear code fix, include a "suggestion" field with the corrected code. For example:
+  - Security issue: provide the corrected line with proper ARN restrictions
+  - Bug: provide the corrected code with proper error handling
+  - Naming issue: provide the line with the better name
+  - Missing feature: provide the added code or configuration
+- Do NOT comment on minor style nitpicks (formatting, spacing) unless they violate project conventions.
+- If the code looks good, say so briefly.
+- Read the actual source to verify your assumptions \u2014 don't guess about what existing code does.
+
+## Output Format
+
+When you have finished your review, respond with ONLY valid JSON matching this exact schema (no markdown fences, no preamble):
+
+{
+  "summary": "A 2-4 sentence overall assessment of the MR, including what it does and your confidence level.",
+  "comments": [
+    {
+      "file": "path/to/file.ts",
+      "line": 42,
+      "body": "Description of the issue and suggested fix.",
+      "severity": "info | warning | critical",
+      "suggestion": "(optional) Suggested replacement code.",
+      "startLine": 40,
+      "endLine": 44
+    }
+  ]
+}
+
+Note: line is where the comment attaches; startLine and endLine describe the range being replaced (if suggestion spans multiple lines).
+
+If there are no issues, return:
+{
+  "summary": "The changes look good. No significant issues found.",
+  "comments": []
+}`;
+
+// src/prompts/comment-reply-system.ts
+var COMMENT_REPLY_SYSTEM_PROMPT = `You are an expert developer assistant responding to a comment on a GitLab Merge Request.
+
+You will be given a discussion thread (all messages in order) and optionally the diff context for the file being discussed. The full repository source code is available in your working directory.
+
+## Workflow
+
+1. Read the full discussion thread to understand the context and what is being asked.
+2. If code is being discussed, read the relevant files from the repository.
+3. Provide a helpful, specific, and actionable response.
+
+## Rules
+
+- Be concise but thorough. Answer the question directly.
+- If suggesting code changes, provide the actual code.
+- If the question is about a specific part of the code, reference the file and line numbers.
+- Use markdown formatting for readability.
+- Do NOT output JSON \u2014 just write a natural language response (with code blocks if needed).
+- Do NOT repeat the question or the thread \u2014 just provide your answer.
+
+## Code Suggestions
+
+When the discussion is on a specific file/line (inline diff discussion) and you want to suggest a code change, use GitLab's suggestion syntax. This renders as a one-click "Apply suggestion" button in the GitLab UI.
+
+**Single-line replacement** (replaces the line the discussion is attached to):
+\\\`\\\`\\\`suggestion
+replacement code here
+\\\`\\\`\\\`
+
+**Multi-line replacement** (replaces a range of lines around the discussion line):
+Use the \\\`:-N+M\\\` syntax after "suggestion", where N is the number of lines BEFORE the discussion line, and M is the number of lines AFTER it.
+For example, to replace 3 lines before and 1 line after the comment line:
+\\\`\\\`\\\`suggestion:-3+1
+replacement code for all 5 lines
+\\\`\\\`\\\`
+
+Rules for suggestions:
+- Only use suggestion blocks when the discussion is on specific code (file/line info is provided).
+- The suggestion block replaces entire lines \u2014 include the complete replacement, not just the changed parts.
+- You can have multiple suggestion blocks in one reply if needed.
+- Outside of suggestion blocks, explain your reasoning in natural language.
+- If the discussion is a general MR comment (not on a specific line), use regular code blocks instead.`;
+
+// src/prompts/build-prompts.ts
+function buildDiffPrompt(mrTitle, mrDescription, mrUrl, sourceBranch, targetBranch, diffs, jiraContext) {
+  const filesDiff = diffs.filter((d) => !d.too_large && !d.collapsed).map((d) => {
+    const status = d.new_file ? "(new file)" : d.deleted_file ? "(deleted)" : d.renamed_file ? `(renamed from ${d.old_path})` : "";
+    return `### ${d.new_path} ${status}
+\`\`\`diff
+${d.diff}
+\`\`\``;
+  }).join("\n\n");
+  const skipped = diffs.filter((d) => d.too_large || d.collapsed);
+  const skippedNote = skipped.length > 0 ? `
+
+> **Note**: ${skipped.length} file(s) were too large to include in the diff. You can read them directly from the working directory: ${skipped.map((d) => d.new_path).join(", ")}` : "";
+  const jiraSection = jiraContext ? `
+## Jira Issue Context
+
+The following Jira issue(s) are referenced in this MR. Use this context to understand the business requirements and verify the implementation matches what was requested.
+
+${jiraContext}
+` : "";
+  return `# Merge Request: ${mrTitle}
+**Branch**: \`${sourceBranch}\` \u2192 \`${targetBranch}\`
+**URL**: ${mrUrl}
+
+## Description
+${mrDescription || "(no description)"}
+${jiraSection}
+## Changed Files (${diffs.length} file(s))
+
+${filesDiff}${skippedNote}
+
+---
+
+Please review the above changes. The full repository is available in your working directory \u2014 read related source files, imports, tests, documentation, and configuration to understand context before producing your review.
+
+When done, output your review as JSON.`;
+}
+function buildCommentReplyPrompt(opts) {
+  let prompt = `# Merge Request: ${opts.mrTitle}
+**URL**: ${opts.mrUrl}
+
+`;
+  if (opts.filePath) {
+    prompt += `## File Context
+**File**: \`${opts.filePath}\``;
+    if (opts.lineNumber) {
+      prompt += ` (line ${opts.lineNumber})`;
+    }
+    prompt += "\n\n";
+  }
+  if (opts.diffContext) {
+    prompt += `## Diff
+\`\`\`diff
+${opts.diffContext}
+\`\`\`
+
+`;
+  }
+  if (opts.jiraContext) {
+    prompt += `## Jira Issue Context
+
+${opts.jiraContext}
+
+`;
+  }
+  prompt += `## Discussion Thread
+
+`;
+  for (const msg of opts.threadMessages) {
+    prompt += `**${msg.author}** (${msg.createdAt}):
+${msg.body}
+
+---
+
+`;
+  }
+  prompt += `Please respond to the latest message in this discussion thread. Provide a helpful and specific answer.`;
+  return prompt;
+}
+
+// src/reviewer.ts
 function truncate(text, max) {
   if (text.length <= max) return text;
   return text.slice(0, max) + "\u2026";
@@ -526,106 +717,6 @@ async function loadProjectInstructions(repoDir) {
     skillDirectories
   };
 }
-var REVIEW_SYSTEM_PROMPT = `You are an expert code reviewer performing a review on a GitLab Merge Request.
-
-You will be given a diff of the changes. The full repository source code is available in your working directory \u2014 you can and should read related files to understand the broader context.
-
-## Workflow
-
-1. First, read the diff carefully to understand what changed.
-2. Explore the repository for context:
-   - Read files that are imported/referenced by the changed files.
-   - Check type definitions, interfaces, or base classes that the changes depend on.
-   - Look at existing tests for the changed code.
-   - Read project documentation (README, CONTRIBUTING, etc.) and configuration files to understand conventions.
-   - Check for related files that might need coordinated changes.
-3. Based on the full context, produce your review.
-
-## Review Focus Areas
-
-1. **Security vulnerabilities** \u2013 SQL injection, XSS, secrets in code, auth issues, unsafe deserialization
-2. **Bugs & logic errors** \u2013 off-by-one, null/undefined references, race conditions, incorrect conditionals, unhandled edge cases
-3. **Performance issues** \u2013 N+1 queries, memory leaks, unnecessary allocations, blocking calls in async code
-4. **Code quality** \u2013 naming, readability, DRY violations, dead code, missing abstractions
-5. **Best practices** \u2013 error handling, input validation, logging, test coverage gaps
-6. **API design** \u2013 backward compatibility, consistent naming, proper HTTP methods/status codes
-7. **Consistency** \u2013 does the change follow existing patterns and conventions in the codebase?
-
-## Rules
-
-- Only comment on CHANGED lines (lines with + prefix in the diff), but use context from the broader codebase to inform your comments.
-- Be specific and actionable. Always suggest a fix or improvement.
-- For issues that have a clear code fix, include a "suggestion" field with the corrected code. For example:
-  - Security issue: provide the corrected line with proper ARN restrictions
-  - Bug: provide the corrected code with proper error handling
-  - Naming issue: provide the line with the better name
-  - Missing feature: provide the added code or configuration
-- Do NOT comment on minor style nitpicks (formatting, spacing) unless they violate project conventions.
-- If the code looks good, say so briefly.
-- Read the actual source to verify your assumptions \u2014 don't guess about what existing code does.
-
-## Output Format
-
-When you have finished your review, respond with ONLY valid JSON matching this exact schema (no markdown fences, no preamble):
-
-{
-  "summary": "A 2-4 sentence overall assessment of the MR, including what it does and your confidence level.",
-  "comments": [
-    {
-      "file": "path/to/file.ts",
-      "line": 42,
-      "body": "Description of the issue and suggested fix.",
-      "severity": "info | warning | critical",
-      "suggestion": "(optional) Suggested replacement code.",
-      "startLine": 40,
-      "endLine": 44
-    }
-  ]
-}
-
-Note: line is where the comment attaches; startLine and endLine describe the range being replaced (if suggestion spans multiple lines).
-
-If there are no issues, return:
-{
-  "summary": "The changes look good. No significant issues found.",
-  "comments": []
-}`;
-function buildDiffPrompt(mrTitle, mrDescription, mrUrl, sourceBranch, targetBranch, diffs, jiraContext) {
-  const filesDiff = diffs.filter((d) => !d.too_large && !d.collapsed).map((d) => {
-    const status = d.new_file ? "(new file)" : d.deleted_file ? "(deleted)" : d.renamed_file ? `(renamed from ${d.old_path})` : "";
-    return `### ${d.new_path} ${status}
-\`\`\`diff
-${d.diff}
-\`\`\``;
-  }).join("\n\n");
-  const skipped = diffs.filter((d) => d.too_large || d.collapsed);
-  const skippedNote = skipped.length > 0 ? `
-
-> **Note**: ${skipped.length} file(s) were too large to include in the diff. You can read them directly from the working directory: ${skipped.map((d) => d.new_path).join(", ")}` : "";
-  const jiraSection = jiraContext ? `
-## Jira Issue Context
-
-The following Jira issue(s) are referenced in this MR. Use this context to understand the business requirements and verify the implementation matches what was requested.
-
-${jiraContext}
-` : "";
-  return `# Merge Request: ${mrTitle}
-**Branch**: \`${sourceBranch}\` \u2192 \`${targetBranch}\`
-**URL**: ${mrUrl}
-
-## Description
-${mrDescription || "(no description)"}
-${jiraSection}
-## Changed Files (${diffs.length} file(s))
-
-${filesDiff}${skippedNote}
-
----
-
-Please review the above changes. The full repository is available in your working directory \u2014 read related source files, imports, tests, documentation, and configuration to understand context before producing your review.
-
-When done, output your review as JSON.`;
-}
 function parseReviewResponse(content) {
   let cleaned = content.trim();
   const jsonBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
@@ -733,47 +824,6 @@ The repository contains an \`agents.md\` file with additional instructions for A
     throw err;
   }
 }
-var COMMENT_REPLY_SYSTEM_PROMPT = `You are an expert developer assistant responding to a comment on a GitLab Merge Request.
-
-You will be given a discussion thread (all messages in order) and optionally the diff context for the file being discussed. The full repository source code is available in your working directory.
-
-## Workflow
-
-1. Read the full discussion thread to understand the context and what is being asked.
-2. If code is being discussed, read the relevant files from the repository.
-3. Provide a helpful, specific, and actionable response.
-
-## Rules
-
-- Be concise but thorough. Answer the question directly.
-- If suggesting code changes, provide the actual code.
-- If the question is about a specific part of the code, reference the file and line numbers.
-- Use markdown formatting for readability.
-- Do NOT output JSON \u2014 just write a natural language response (with code blocks if needed).
-- Do NOT repeat the question or the thread \u2014 just provide your answer.
-
-## Code Suggestions
-
-When the discussion is on a specific file/line (inline diff discussion) and you want to suggest a code change, use GitLab's suggestion syntax. This renders as a one-click "Apply suggestion" button in the GitLab UI.
-
-**Single-line replacement** (replaces the line the discussion is attached to):
-\`\`\`suggestion
-replacement code here
-\`\`\`
-
-**Multi-line replacement** (replaces a range of lines around the discussion line):
-Use the \`:-N+M\` syntax after "suggestion", where N is the number of lines BEFORE the discussion line, and M is the number of lines AFTER it.
-For example, to replace 3 lines before and 1 line after the comment line:
-\`\`\`suggestion:-3+1
-replacement code for all 5 lines
-\`\`\`
-
-Rules for suggestions:
-- Only use suggestion blocks when the discussion is on specific code (file/line info is provided).
-- The suggestion block replaces entire lines \u2014 include the complete replacement, not just the changed parts.
-- You can have multiple suggestion blocks in one reply if needed.
-- Outside of suggestion blocks, explain your reasoning in natural language.
-- If the discussion is a general MR comment (not on a specific line), use regular code blocks instead.`;
 async function replyToComment(opts) {
   const { config, repoDir } = opts;
   const { copilotInstructions, agentsInstructions, skillDirectories } = await loadProjectInstructions(repoDir);
@@ -808,45 +858,15 @@ async function replyToComment(opts) {
     });
     const detachListeners = attachSessionListeners(session, config.logLevel);
     console.log(`[reviewer] Comment reply session created with model: ${config.copilotModel}`);
-    let prompt = `# Merge Request: ${opts.mrTitle}
-**URL**: ${opts.mrUrl}
-
-`;
-    if (opts.filePath) {
-      prompt += `## File Context
-**File**: \`${opts.filePath}\``;
-      if (opts.lineNumber) {
-        prompt += ` (line ${opts.lineNumber})`;
-      }
-      prompt += "\n\n";
-    }
-    if (opts.diffContext) {
-      prompt += `## Diff
-\`\`\`diff
-${opts.diffContext}
-\`\`\`
-
-`;
-    }
-    if (opts.jiraContext) {
-      prompt += `## Jira Issue Context
-
-${opts.jiraContext}
-
-`;
-    }
-    prompt += `## Discussion Thread
-
-`;
-    for (const msg of opts.threadMessages) {
-      prompt += `**${msg.author}** (${msg.createdAt}):
-${msg.body}
-
----
-
-`;
-    }
-    prompt += `Please respond to the latest message in this discussion thread. Provide a helpful and specific answer.`;
+    const prompt = buildCommentReplyPrompt({
+      mrTitle: opts.mrTitle,
+      mrUrl: opts.mrUrl,
+      filePath: opts.filePath,
+      lineNumber: opts.lineNumber,
+      diffContext: opts.diffContext,
+      jiraContext: opts.jiraContext,
+      threadMessages: opts.threadMessages
+    });
     console.log(
       `[reviewer] Sending comment reply request (${opts.threadMessages.length} messages in thread, prompt: ${prompt.length} chars)`
     );
