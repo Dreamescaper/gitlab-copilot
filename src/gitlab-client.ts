@@ -110,6 +110,32 @@ export class GitLabClient {
   }
 
   /**
+   * Get existing discussions (inline diff comments) on a merge request.
+   */
+  async getMergeRequestDiscussions(
+    projectId: number,
+    mrIid: number,
+  ): Promise<Array<{ id: string; notes: Array<{ body: string }> }>> {
+    return this.request<Array<{ id: string; notes: Array<{ body: string }> }>>(
+      "GET",
+      `/projects/${projectId}/merge_requests/${mrIid}/discussions`,
+    );
+  }
+
+  /**
+   * Get existing notes (general comments) on a merge request.
+   */
+  async getMergeRequestNotes(
+    projectId: number,
+    mrIid: number,
+  ): Promise<Array<{ id: number; body: string }>> {
+    return this.request<Array<{ id: number; body: string }>>(
+      "GET",
+      `/projects/${projectId}/merge_requests/${mrIid}/notes`,
+    );
+  }
+
+  /**
    * Post an inline discussion (diff comment) on a merge request.
    */
   async postDiffDiscussion(
@@ -128,6 +154,7 @@ export class GitLabClient {
   /**
    * Post all review comments to a merge request.
    *
+   * - Fetches existing discussions/notes to avoid duplicates
    * - Inline comments are posted as diff discussions on the specific file/line.
    * - A summary note is posted as a regular MR note.
    */
@@ -137,13 +164,52 @@ export class GitLabClient {
     summary: string,
     comments: ReviewComment[],
     diffVersion: MergeRequestDiffVersionDetail,
-  ): Promise<{ posted: number; failed: number }> {
+  ): Promise<{ posted: number; failed: number; skipped: number }> {
     let posted = 0;
     let failed = 0;
+    let skipped = 0;
+
+    // Fetch existing comments to avoid duplicates
+    console.log("[gitlab] Fetching existing comments to avoid duplicates...");
+    let existingDiscussions: Array<{ id: string; notes: Array<{ body: string }> }> = [];
+    let existingNotes: Array<{ id: number; body: string }> = [];
+    try {
+      existingDiscussions = await this.getMergeRequestDiscussions(projectId, mrIid);
+      existingNotes = await this.getMergeRequestNotes(projectId, mrIid);
+    } catch (err) {
+      console.warn("[gitlab] Failed to fetch existing comments, proceeding anyway:", err);
+    }
+
+    // Check if a comment already exists for a given file/line/body
+    const commentExists = (file: string, line: number, body: string): boolean => {
+      // Check discussions for inline comments on this file/line
+      const fileLineKey = `${file}:${line}`;
+      for (const discussion of existingDiscussions) {
+        for (const note of discussion.notes) {
+          if (note.body.includes(fileLineKey) && note.body.includes(body)) {
+            return true;
+          }
+        }
+      }
+      // Check general notes
+      for (const note of existingNotes) {
+        if (note.body.includes(fileLineKey) && note.body.includes(body)) {
+          return true;
+        }
+      }
+      return false;
+    };
 
     // Post inline comments
     for (const comment of comments) {
       try {
+        // Skip if comment already exists
+        if (commentExists(comment.file, comment.line, comment.body)) {
+          console.log(`[gitlab] Skipping duplicate comment on ${comment.file}:${comment.line}`);
+          skipped++;
+          continue;
+        }
+
         // Find the matching diff file
         const diffFile = diffVersion.diffs.find(
           (d) => d.new_path === comment.file || d.old_path === comment.file,
@@ -153,6 +219,11 @@ export class GitLabClient {
           console.warn(
             `[gitlab] File "${comment.file}" not found in diff, posting as general note`,
           );
+          // Skip if comment already exists as a general note
+          if (commentExists(comment.file, comment.line, comment.body)) {
+            skipped++;
+            continue;
+          }
           await this.postMergeRequestNote(
             projectId,
             mrIid,
@@ -218,6 +289,6 @@ export class GitLabClient {
     // Post summary
     await this.postMergeRequestNote(projectId, mrIid, summary);
 
-    return { posted, failed };
+    return { posted, failed, skipped };
   }
 }

@@ -133,9 +133,9 @@ async function main(): Promise<void> {
       `## 🤖 Copilot Code Review\n\n` +
       `${review.summary}\n\n` +
       `---\n` +
-      `_${review.comments.length} inline comment(s) posted._`;
+      `_${review.comments.length} comment(s) reviewed._`;
 
-    const { posted, failed } = await gitlab.postReview(
+    const { posted, failed, skipped } = await gitlab.postReview(
       projectId,
       mrIid,
       summaryBody,
@@ -144,7 +144,7 @@ async function main(): Promise<void> {
     );
 
     console.log(
-      `[review] Done: ${posted} comment(s) posted, ${failed} failed`,
+      `[review] Done: ${posted} comment(s) posted, ${skipped} skipped (duplicate), ${failed} failed`,
     );
 
     if (failed > 0) {

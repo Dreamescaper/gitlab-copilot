@@ -95,6 +95,24 @@ var GitLabClient = class {
     );
   }
   /**
+   * Get existing discussions (inline diff comments) on a merge request.
+   */
+  async getMergeRequestDiscussions(projectId, mrIid) {
+    return this.request(
+      "GET",
+      `/projects/${projectId}/merge_requests/${mrIid}/discussions`
+    );
+  }
+  /**
+   * Get existing notes (general comments) on a merge request.
+   */
+  async getMergeRequestNotes(projectId, mrIid) {
+    return this.request(
+      "GET",
+      `/projects/${projectId}/merge_requests/${mrIid}/notes`
+    );
+  }
+  /**
    * Post an inline discussion (diff comment) on a merge request.
    */
   async postDiffDiscussion(projectId, mrIid, body, position) {
@@ -107,14 +125,46 @@ var GitLabClient = class {
   /**
    * Post all review comments to a merge request.
    *
+   * - Fetches existing discussions/notes to avoid duplicates
    * - Inline comments are posted as diff discussions on the specific file/line.
    * - A summary note is posted as a regular MR note.
    */
   async postReview(projectId, mrIid, summary, comments, diffVersion) {
     let posted = 0;
     let failed = 0;
+    let skipped = 0;
+    console.log("[gitlab] Fetching existing comments to avoid duplicates...");
+    let existingDiscussions = [];
+    let existingNotes = [];
+    try {
+      existingDiscussions = await this.getMergeRequestDiscussions(projectId, mrIid);
+      existingNotes = await this.getMergeRequestNotes(projectId, mrIid);
+    } catch (err) {
+      console.warn("[gitlab] Failed to fetch existing comments, proceeding anyway:", err);
+    }
+    const commentExists = (file, line, body) => {
+      const fileLineKey = `${file}:${line}`;
+      for (const discussion of existingDiscussions) {
+        for (const note of discussion.notes) {
+          if (note.body.includes(fileLineKey) && note.body.includes(body)) {
+            return true;
+          }
+        }
+      }
+      for (const note of existingNotes) {
+        if (note.body.includes(fileLineKey) && note.body.includes(body)) {
+          return true;
+        }
+      }
+      return false;
+    };
     for (const comment of comments) {
       try {
+        if (commentExists(comment.file, comment.line, comment.body)) {
+          console.log(`[gitlab] Skipping duplicate comment on ${comment.file}:${comment.line}`);
+          skipped++;
+          continue;
+        }
         const diffFile = diffVersion.diffs.find(
           (d) => d.new_path === comment.file || d.old_path === comment.file
         );
@@ -122,6 +172,10 @@ var GitLabClient = class {
           console.warn(
             `[gitlab] File "${comment.file}" not found in diff, posting as general note`
           );
+          if (commentExists(comment.file, comment.line, comment.body)) {
+            skipped++;
+            continue;
+          }
           await this.postMergeRequestNote(
             projectId,
             mrIid,
@@ -177,7 +231,7 @@ ${comment.suggestion}
       }
     }
     await this.postMergeRequestNote(projectId, mrIid, summary);
-    return { posted, failed };
+    return { posted, failed, skipped };
   }
 };
 
@@ -587,8 +641,8 @@ async function main() {
 ${review.summary}
 
 ---
-_${review.comments.length} inline comment(s) posted._`;
-    const { posted, failed } = await gitlab.postReview(
+_${review.comments.length} comment(s) reviewed._`;
+    const { posted, failed, skipped } = await gitlab.postReview(
       projectId,
       mrIid,
       summaryBody,
@@ -596,7 +650,7 @@ _${review.comments.length} inline comment(s) posted._`;
       diffVersion
     );
     console.log(
-      `[review] Done: ${posted} comment(s) posted, ${failed} failed`
+      `[review] Done: ${posted} comment(s) posted, ${skipped} skipped (duplicate), ${failed} failed`
     );
     if (failed > 0) {
       process.exitCode = 1;
