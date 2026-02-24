@@ -10,8 +10,11 @@ Automated code review for GitLab Merge Requests powered by **GitHub Copilot SDK*
 - **Comment replies** — mention the bot (`@copilot-reviewer`) in any MR comment to get an AI-powered response with full thread context
 - **Code suggestions** — inline suggestions using GitLab's Apply Suggestion UI (single-line and multi-line ranges)
 - **Jira integration** — automatically fetches Jira issue descriptions and comments when a Jira key is found in the MR title
+- **Skills support** — loads agent skills from `.github/skills/`, `.claude/skills/`, or `.agents/skills/` directories
 - **Duplicate detection** — skips comments that have already been posted (safe to re-trigger)
 - **Per-project customization** — supports `copilot-instructions.md` and `agents.md` for project-specific review guidelines
+- **Submit as review** — all comments are created as draft notes and published atomically as a single "Comment" review submission
+- **Copilot thinking logs** — see tool calls, file reads, and reasoning in CI logs (configurable via `LOG_LEVEL`)
 - **No infrastructure required** — runs on existing GitLab runners with no intermediary servers
 
 ## How It Works
@@ -185,21 +188,56 @@ This works for both full MR reviews and comment replies.
 
 ## Customizing Reviews Per Project
 
-You can add a `copilot-instructions.md` and/or `agents.md` file to the target project to customize the review behavior. The review script checks these paths (first found wins):
+You can add project-specific instructions and skills to customize the review behavior:
 
+### Instructions Files
+
+The review script checks these paths (first found wins):
+
+**`copilot-instructions.md`:**
 - `.github/copilot-instructions.md`
 - `.gitlab/copilot-instructions.md`
 - `copilot-instructions.md`
 
-Same for `agents.md`. Contents are appended to the Copilot system prompt.
+**`agents.md`:**
+- `.github/agents.md`
+- `.gitlab/agents.md`
+- `agents.md`
+
+Contents are appended to the Copilot system prompt. Both files can coexist.
+
+### Skills Directories
+
+The Copilot SDK natively loads skills from directories. Skills are structured collections of prompts, tools, and examples that give Copilot specialized knowledge.
+
+Supported locations (first existing directory is used):
+- `.github/skills/`
+- `.claude/skills/`
+- `.agents/skills/`
+
+All subdirectories within the matched location are loaded as individual skills. See the [Copilot SDK Skills Guide](https://github.com/github/copilot-sdk/blob/main/docs/guides/skills.md) for skill structure details.
+
+Example:
+```
+.github/skills/
+  code-review/
+    skill.json
+    prompts/
+      system.md
+  security/
+    skill.json
+    prompts/
+      system.md
+```
 
 ## How Comments Are Posted
 
+- **Draft notes workflow**: All comments are created as draft notes, then published atomically via GitLab's `bulk_publish` API (equivalent to "Submit Review" with "Comment" action). This creates a single notification instead of one per comment.
 - **Inline diff discussions**: Each finding is posted on the specific file and line. Includes severity indicator (🔴 critical, 🟡 warning, ℹ️ info).
 - **Code suggestions**: When applicable, comments include GitLab suggestion blocks with single-line or multi-line range replacements (rendered as "Apply suggestion" buttons).
 - **Summary note**: Overall assessment with comment count.
 - **Duplicate detection**: Existing comments are checked before posting — re-triggering a review won't create duplicates.
-- **Fallback**: If an inline comment fails (e.g. line not in diff), it falls back to a regular MR note.
+- **Fallback**: If an inline comment fails (e.g. line not in diff), it falls back to a general draft note.
 - **Comment replies**: Posted directly in the discussion thread that triggered them.
 
 ## Troubleshooting
@@ -246,4 +284,6 @@ Set `LOG_LEVEL=debug` to also log tool results and model reasoning tokens:
 | **Shallow clone** | Minimizes time and disk; Copilot rarely needs full history |
 | **Diff metadata from API** | SHAs and line mappings needed for GitLab's `position` object when posting inline discussions |
 | **Optional Jira integration** | Provides business context without requiring Jira — gracefully skipped when not configured |
+| **Draft notes + bulk publish** | GitLab's "Submit Review" pattern — all comments posted atomically as a single review submission |
+| **Native skills support** | Copilot SDK's `skillDirectories` avoids prompt bloat and supports complex skill structures |
 
