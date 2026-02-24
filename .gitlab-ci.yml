@@ -21,11 +21,14 @@
 stages:
   - review
 
+default:
+  tags:
+    - scm-aws
+
 copilot-review:
   stage: review
   image: 
     name: node:24-slim
-    pull_policy: always
 
   # Only run when triggered via the Pipeline Trigger API (webhook or manual)
   rules:
