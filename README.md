@@ -233,10 +233,10 @@ Example:
 
 ## How Comments Are Posted
 
-- **Draft notes workflow**: All comments are created as draft notes, then published atomically via GitLab's `bulk_publish` API (equivalent to "Submit Review" with "Comment" action). This creates a single notification instead of one per comment.
+- **Draft notes workflow**: All review findings are created as draft notes, then published atomically via GitLab's `bulk_publish` API (equivalent to "Submit Review" with "Comment" action). This creates a single notification instead of one per comment.
 - **Inline diff discussions**: Each finding is posted on the specific file and line. Includes severity indicator (🔴 critical, 🟡 warning, ℹ️ info).
 - **Code suggestions**: When applicable, comments include GitLab suggestion blocks with single-line or multi-line range replacements (rendered as "Apply suggestion" buttons).
-- **Summary note**: Overall assessment with comment count.
+- **Summary note**: Overall assessment posted separately as a simple note (not resolvable, not part of review threads).
 - **Duplicate detection**: Existing comments are checked before posting — re-triggering a review won't create duplicates.
 - **Fallback**: If an inline comment fails (e.g. line not in diff), it falls back to a general draft note.
 - **Comment replies**: Posted directly in the discussion thread that triggered them.

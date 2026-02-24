@@ -282,8 +282,8 @@ export class GitLabClient {
    * - Fetches existing discussions/notes to avoid duplicates
    * - Inline comments are created as draft diff notes.
    * - Comments that can't be placed inline fall back to general draft notes.
-   * - A summary draft note is always included.
    * - All drafts are published in one shot via bulk_publish.
+   * - Summary is posted separately as a simple note (not resolvable).
    */
   async postReview(
     projectId: number,
@@ -420,13 +420,15 @@ export class GitLabClient {
       }
     }
 
-    // Add summary as a general draft note
-    await this.createDraftNote(projectId, mrIid, summary);
-
     // Publish all draft notes as a single review ("Comment" action)
-    console.log(`[gitlab] Publishing review (${posted} draft note(s))...`);
-    await this.publishAllDraftNotes(projectId, mrIid);
-    console.log("[gitlab] Review submitted.");
+    if (posted > 0) {
+      console.log(`[gitlab] Publishing review (${posted} draft note(s))...`);
+      await this.publishAllDraftNotes(projectId, mrIid);
+      console.log("[gitlab] Review submitted.");
+    }
+
+    // Post summary as a separate, non-discussion note (not resolvable)
+    await this.postMergeRequestNote(projectId, mrIid, summary);
 
     return { posted, failed, skipped };
   }
