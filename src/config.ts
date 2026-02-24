@@ -13,6 +13,11 @@
  * Optional environment variables:
  *   COPILOT_MODEL         – Model to use (default: gpt-4.1)
  *   LOG_LEVEL             – Logging verbosity (default: info)
+ *
+ * Optional Jira integration (all three required to enable):
+ *   JIRA_URL              – Jira instance URL (e.g. https://yourteam.atlassian.net)
+ *   JIRA_EMAIL            – Email associated with the Jira API token
+ *   JIRA_API_TOKEN        – Jira API token
  */
 
 export interface Config {
@@ -22,6 +27,11 @@ export interface Config {
   githubToken: string;
   copilotModel: string;
   logLevel: string;
+  jira?: {
+    url: string;
+    email: string;
+    apiToken: string;
+  };
 }
 
 function requireEnv(name: string): string {
@@ -39,6 +49,19 @@ export function loadConfig(): Config {
     throw new Error("Missing GitLab URL: CI_SERVER_URL or GITLAB_URL must be set");
   }
 
+  // Optional Jira integration — all three vars must be set to enable
+  const jiraUrl = process.env["JIRA_URL"];
+  const jiraEmail = process.env["JIRA_EMAIL"];
+  const jiraApiToken = process.env["JIRA_API_TOKEN"];
+  const jira =
+    jiraUrl && jiraEmail && jiraApiToken
+      ? { url: jiraUrl.replace(/\/+$/, ""), email: jiraEmail, apiToken: jiraApiToken }
+      : undefined;
+
+  if (jira) {
+    console.log(`[config] Jira integration enabled (${jira.url})`);
+  }
+
   return {
     gitlabUrl: gitlabUrl.replace(/\/+$/, ""),
     gitlabToken: requireEnv("GITLAB_TOKEN"),
@@ -46,6 +69,7 @@ export function loadConfig(): Config {
     githubToken: requireEnv("GITHUB_TOKEN"),
     copilotModel: process.env["COPILOT_MODEL"] ?? "gpt-4.1",
     logLevel: process.env["LOG_LEVEL"] ?? "info",
+    jira,
   };
 }
 

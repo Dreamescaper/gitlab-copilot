@@ -16,13 +16,21 @@ function loadConfig() {
   if (!gitlabUrl) {
     throw new Error("Missing GitLab URL: CI_SERVER_URL or GITLAB_URL must be set");
   }
+  const jiraUrl = process.env["JIRA_URL"];
+  const jiraEmail = process.env["JIRA_EMAIL"];
+  const jiraApiToken = process.env["JIRA_API_TOKEN"];
+  const jira = jiraUrl && jiraEmail && jiraApiToken ? { url: jiraUrl.replace(/\/+$/, ""), email: jiraEmail, apiToken: jiraApiToken } : void 0;
+  if (jira) {
+    console.log(`[config] Jira integration enabled (${jira.url})`);
+  }
   return {
     gitlabUrl: gitlabUrl.replace(/\/+$/, ""),
     gitlabToken: requireEnv("GITLAB_TOKEN"),
     gitlabBotUsername: requireEnv("GITLAB_BOT_USERNAME"),
     githubToken: requireEnv("GITHUB_TOKEN"),
     copilotModel: process.env["COPILOT_MODEL"] ?? "gpt-4.1",
-    logLevel: process.env["LOG_LEVEL"] ?? "info"
+    logLevel: process.env["LOG_LEVEL"] ?? "info",
+    jira
   };
 }
 
@@ -411,7 +419,7 @@ If there are no issues, return:
   "summary": "The changes look good. No significant issues found.",
   "comments": []
 }`;
-function buildDiffPrompt(mrTitle, mrDescription, mrUrl, sourceBranch, targetBranch, diffs) {
+function buildDiffPrompt(mrTitle, mrDescription, mrUrl, sourceBranch, targetBranch, diffs, jiraContext) {
   const filesDiff = diffs.filter((d) => !d.too_large && !d.collapsed).map((d) => {
     const status = d.new_file ? "(new file)" : d.deleted_file ? "(deleted)" : d.renamed_file ? `(renamed from ${d.old_path})` : "";
     return `### ${d.new_path} ${status}
@@ -423,13 +431,20 @@ ${d.diff}
   const skippedNote = skipped.length > 0 ? `
 
 > **Note**: ${skipped.length} file(s) were too large to include in the diff. You can read them directly from the working directory: ${skipped.map((d) => d.new_path).join(", ")}` : "";
+  const jiraSection = jiraContext ? `
+## Jira Issue Context
+
+The following Jira issue(s) are referenced in this MR. Use this context to understand the business requirements and verify the implementation matches what was requested.
+
+${jiraContext}
+` : "";
   return `# Merge Request: ${mrTitle}
 **Branch**: \`${sourceBranch}\` \u2192 \`${targetBranch}\`
 **URL**: ${mrUrl}
 
 ## Description
 ${mrDescription || "(no description)"}
-
+${jiraSection}
 ## Changed Files (${diffs.length} file(s))
 
 ${filesDiff}${skippedNote}
@@ -521,7 +536,8 @@ The repository contains an \`agents.md\` file with additional instructions for A
       opts.mrUrl,
       opts.sourceBranch,
       opts.targetBranch,
-      diffVersion.diffs
+      diffVersion.diffs,
+      opts.jiraContext
     );
     console.log(
       `[reviewer] Sending ${diffVersion.diffs.length} file(s) for review (prompt length: ${userPrompt.length} chars, workingDir: ${repoDir})`
@@ -635,6 +651,13 @@ ${opts.diffContext}
 
 `;
     }
+    if (opts.jiraContext) {
+      prompt += `## Jira Issue Context
+
+${opts.jiraContext}
+
+`;
+    }
     prompt += `## Discussion Thread
 
 `;
@@ -665,6 +688,132 @@ ${msg.body}
     }
     throw err;
   }
+}
+
+// src/jira-client.ts
+var JIRA_KEY_PATTERN = /\b([A-Z][A-Z0-9]+-\d+)\b/g;
+function extractJiraKeys(text) {
+  const matches = text.match(JIRA_KEY_PATTERN);
+  if (!matches) return [];
+  return [...new Set(matches)];
+}
+var JiraClient = class {
+  baseUrl;
+  authHeader;
+  constructor(jiraConfig) {
+    this.baseUrl = `${jiraConfig.url}/rest/api/2`;
+    const credentials = Buffer.from(
+      `${jiraConfig.email}:${jiraConfig.apiToken}`
+    ).toString("base64");
+    this.authHeader = `Basic ${credentials}`;
+  }
+  async request(path) {
+    const url = `${this.baseUrl}${path}`;
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: this.authHeader,
+        Accept: "application/json"
+      }
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(
+        `Jira API error: ${response.status} ${response.statusText} \u2013 ${text}`
+      );
+    }
+    return response.json();
+  }
+  /**
+   * Fetch issue details by key (e.g. "AO2-2624").
+   */
+  async getIssue(issueKey) {
+    return this.request(
+      `/issue/${issueKey}?fields=summary,description,status,issuetype,priority,labels,assignee`
+    );
+  }
+  /**
+   * Fetch comments on an issue.
+   */
+  async getIssueComments(issueKey) {
+    return this.request(
+      `/issue/${issueKey}/comment?orderBy=created`
+    );
+  }
+  /**
+   * Fetch full context for an issue: details + comments.
+   */
+  async getIssueContext(issueKey) {
+    const [issue, commentsResult] = await Promise.all([
+      this.getIssue(issueKey),
+      this.getIssueComments(issueKey)
+    ]);
+    return {
+      key: issue.key,
+      summary: issue.fields.summary,
+      type: issue.fields.issuetype.name,
+      status: issue.fields.status.name,
+      priority: issue.fields.priority?.name,
+      assignee: issue.fields.assignee?.displayName ?? void 0,
+      labels: issue.fields.labels,
+      description: issue.fields.description,
+      comments: commentsResult.comments.map((c) => ({
+        author: c.author.displayName,
+        body: c.body,
+        created: c.created
+      }))
+    };
+  }
+};
+async function fetchJiraContext(text, config) {
+  if (!config.jira) return void 0;
+  const keys = extractJiraKeys(text);
+  if (keys.length === 0) return void 0;
+  console.log(`[jira] Found Jira keys: ${keys.join(", ")}`);
+  const client = new JiraClient(config.jira);
+  const contexts = [];
+  for (const key of keys) {
+    try {
+      const ctx = await client.getIssueContext(key);
+      contexts.push(ctx);
+      console.log(`[jira] Fetched ${key}: "${ctx.summary}" (${ctx.comments.length} comments)`);
+    } catch (err) {
+      console.warn(`[jira] Failed to fetch ${key}:`, err);
+    }
+  }
+  if (contexts.length === 0) return void 0;
+  return contexts.map(formatIssueContext).join("\n\n");
+}
+function formatIssueContext(ctx) {
+  let result = `### ${ctx.key}: ${ctx.summary}
+`;
+  result += `**Type**: ${ctx.type} | **Status**: ${ctx.status}`;
+  if (ctx.priority) result += ` | **Priority**: ${ctx.priority}`;
+  if (ctx.assignee) result += ` | **Assignee**: ${ctx.assignee}`;
+  if (ctx.labels && ctx.labels.length > 0) {
+    result += `
+**Labels**: ${ctx.labels.join(", ")}`;
+  }
+  result += "\n";
+  if (ctx.description) {
+    result += `
+**Description**:
+${ctx.description}
+`;
+  }
+  if (ctx.comments.length > 0) {
+    result += `
+**Comments** (${ctx.comments.length}):
+`;
+    for (const comment of ctx.comments) {
+      const date = new Date(comment.created).toISOString().split("T")[0];
+      result += `
+> **${comment.author}** (${date}):
+> ${comment.body.replace(/\n/g, "\n> ")}
+`;
+    }
+  }
+  return result;
 }
 
 // src/webhook.ts
@@ -838,6 +987,7 @@ async function handleCommentReply(payload, config) {
         console.warn("[review] Could not fetch diff context, continuing without it");
       }
     }
+    const jiraContext = await fetchJiraContext(mr.title, config);
     console.log("[review] Cloning target repository\u2026");
     const clone = await cloneRepository(httpUrl, sourceBranch, config.gitlabToken);
     cleanup = clone.cleanup;
@@ -851,7 +1001,8 @@ async function handleCommentReply(payload, config) {
       lineNumber,
       diffContext,
       mrTitle: mr.title,
-      mrUrl: mr.url
+      mrUrl: mr.url,
+      jiraContext
     });
     if (!reply) {
       console.log("[review] Empty reply from Copilot, skipping.");
@@ -921,6 +1072,7 @@ async function handleMergeRequestReview(payload, config) {
       console.log("[review] No diffs to review.");
       return;
     }
+    const jiraContext = await fetchJiraContext(mrTitle, config);
     console.log("[review] Running Copilot review\u2026");
     const review = await reviewMergeRequest({
       config,
@@ -930,7 +1082,8 @@ async function handleMergeRequestReview(payload, config) {
       mrUrl,
       sourceBranch,
       targetBranch,
-      diffVersion
+      diffVersion,
+      jiraContext
     });
     console.log(
       `[review] Review complete: ${review.comments.length} comment(s)`

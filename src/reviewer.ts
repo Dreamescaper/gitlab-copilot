@@ -154,6 +154,7 @@ function buildDiffPrompt(
   sourceBranch: string,
   targetBranch: string,
   diffs: DiffFile[],
+  jiraContext?: string,
 ): string {
   const filesDiff = diffs
     .filter((d) => !d.too_large && !d.collapsed)
@@ -176,13 +177,17 @@ function buildDiffPrompt(
         `You can read them directly from the working directory: ${skipped.map((d) => d.new_path).join(", ")}`
       : "";
 
+  const jiraSection = jiraContext
+    ? `\n## Jira Issue Context\n\nThe following Jira issue(s) are referenced in this MR. Use this context to understand the business requirements and verify the implementation matches what was requested.\n\n${jiraContext}\n`
+    : "";
+
   return `# Merge Request: ${mrTitle}
 **Branch**: \`${sourceBranch}\` → \`${targetBranch}\`
 **URL**: ${mrUrl}
 
 ## Description
 ${mrDescription || "(no description)"}
-
+${jiraSection}
 ## Changed Files (${diffs.length} file(s))
 
 ${filesDiff}${skippedNote}
@@ -262,6 +267,8 @@ export interface ReviewOptions {
   sourceBranch: string;
   targetBranch: string;
   diffVersion: MergeRequestDiffVersionDetail;
+  /** Jira issue context (formatted markdown), if available */
+  jiraContext?: string;
 }
 
 /**
@@ -323,6 +330,7 @@ export async function reviewMergeRequest(
       opts.sourceBranch,
       opts.targetBranch,
       diffVersion.diffs,
+      opts.jiraContext,
     );
 
     console.log(
@@ -408,6 +416,8 @@ export interface CommentReplyOptions {
   /** MR metadata for context */
   mrTitle: string;
   mrUrl: string;
+  /** Jira issue context (formatted markdown), if available */
+  jiraContext?: string;
 }
 
 /**
@@ -466,6 +476,10 @@ export async function replyToComment(
 
     if (opts.diffContext) {
       prompt += `## Diff\n\`\`\`diff\n${opts.diffContext}\n\`\`\`\n\n`;
+    }
+
+    if (opts.jiraContext) {
+      prompt += `## Jira Issue Context\n\n${opts.jiraContext}\n\n`;
     }
 
     prompt += `## Discussion Thread\n\n`;
