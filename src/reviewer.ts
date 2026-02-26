@@ -43,11 +43,52 @@ function buildSessionHooks(logLevel: string) {
 
 /**
  * Attach session event listeners for streaming progress visibility.
- * Returns a cleanup function that unsubscribes all listeners.
+ * Returns a cleanup function and accumulated usage statistics.
  */
-function attachSessionListeners(session: { on: Function }, logLevel: string): () => void {
+function attachSessionListeners(session: { on: Function }, logLevel: string): {
+  detach: () => void;
+  getUsage: () => UsageStats;
+} {
   const isDebug = logLevel === "debug";
   const unsubscribers: Array<() => void> = [];
+
+  // Track cumulative usage across all API calls in this session
+  const usage: UsageStats = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalCost: 0,
+    requestCount: 0,
+  };
+
+  // Track usage from each assistant.usage event
+  unsubscribers.push(
+    session.on("assistant.usage", (event: {
+      data: {
+        model: string;
+        inputTokens?: number;
+        outputTokens?: number;
+        cacheReadTokens?: number;
+        cacheWriteTokens?: number;
+        cost?: number;
+      };
+    }) => {
+      usage.inputTokens += event.data.inputTokens ?? 0;
+      usage.outputTokens += event.data.outputTokens ?? 0;
+      usage.cacheReadTokens += event.data.cacheReadTokens ?? 0;
+      usage.cacheWriteTokens += event.data.cacheWriteTokens ?? 0;
+      usage.totalCost += event.data.cost ?? 0;
+      usage.requestCount++;
+
+      if (isDebug) {
+        console.log(
+          `[copilot] usage: +${event.data.inputTokens ?? 0} in, +${event.data.outputTokens ?? 0} out, ` +
+          `cost: ${event.data.cost?.toFixed(4) ?? "N/A"} (model: ${event.data.model})`,
+        );
+      }
+    }),
+  );
 
   // Log reasoning tokens (for models like o1 that expose reasoning)
   if (isDebug) {
@@ -72,11 +113,23 @@ function attachSessionListeners(session: { on: Function }, logLevel: string): ()
     }),
   );
 
-  return () => {
-    for (const unsub of unsubscribers) {
-      try { unsub(); } catch { /* ignore */ }
-    }
+  return {
+    detach: () => {
+      for (const unsub of unsubscribers) {
+        try { unsub(); } catch { /* ignore */ }
+      }
+    },
+    getUsage: () => usage,
   };
+}
+
+interface UsageStats {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalCost: number;
+  requestCount: number;
 }
 
 // ─── Project-specific instructions ──────────────────────────────────────────
@@ -306,8 +359,8 @@ export async function reviewMergeRequest(
       hooks: buildSessionHooks(config.logLevel),
     });
 
-    // Attach event listeners for errors/reasoning visibility
-    const detachListeners = attachSessionListeners(session, config.logLevel);
+    // Attach event listeners for errors/reasoning/usage visibility
+    const { detach, getUsage } = attachSessionListeners(session, config.logLevel);
 
     console.log(`[reviewer] Session created with model: ${config.copilotModel}`);
 
@@ -333,7 +386,16 @@ export async function reviewMergeRequest(
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got response (${responseContent.length} chars)`);
 
-    detachListeners();
+    // Log usage statistics
+    const usage = getUsage();
+    console.log(
+      `[reviewer] Usage: ${usage.requestCount} request(s), ` +
+      `${usage.inputTokens} input + ${usage.outputTokens} output tokens` +
+      (usage.cacheReadTokens > 0 ? ` (${usage.cacheReadTokens} cached)` : "") +
+      (usage.totalCost > 0 ? `, cost: $${usage.totalCost.toFixed(6)}` : ""),
+    );
+
+    detach();
     await session.destroy();
     await client.stop();
 
@@ -409,7 +471,7 @@ export async function replyToComment(
       hooks: buildSessionHooks(config.logLevel),
     });
 
-    const detachListeners = attachSessionListeners(session, config.logLevel);
+    const { detach, getUsage } = attachSessionListeners(session, config.logLevel);
 
     console.log(`[reviewer] Comment reply session created with model: ${config.copilotModel}`);
 
@@ -435,7 +497,16 @@ export async function replyToComment(
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got reply (${responseContent.length} chars)`);
 
-    detachListeners();
+    // Log usage statistics
+    const usage = getUsage();
+    console.log(
+      `[reviewer] Usage: ${usage.requestCount} request(s), ` +
+      `${usage.inputTokens} input + ${usage.outputTokens} output tokens` +
+      (usage.cacheReadTokens > 0 ? ` (${usage.cacheReadTokens} cached)` : "") +
+      (usage.totalCost > 0 ? `, cost: $${usage.totalCost.toFixed(6)}` : ""),
+    );
+
+    detach();
     await session.destroy();
     await client.stop();
 

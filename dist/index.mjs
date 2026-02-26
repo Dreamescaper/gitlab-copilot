@@ -455,7 +455,7 @@ You will be given a diff of the changes. The full repository source code is avai
   - Naming issue: provide the line with the better name
   - Missing feature: provide the added code or configuration
 - Do NOT comment on minor style nitpicks (formatting, spacing) unless they violate project conventions.
-- If the code looks good, say so briefly.
+- Do NOT comment on possible compile errors or incorrect framework versions.
 - Read the actual source to verify your assumptions \u2014 don't guess about what existing code does.
 
 ## Output Format
@@ -632,6 +632,29 @@ function buildSessionHooks(logLevel) {
 function attachSessionListeners(session, logLevel) {
   const isDebug = logLevel === "debug";
   const unsubscribers = [];
+  const usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalCost: 0,
+    requestCount: 0
+  };
+  unsubscribers.push(
+    session.on("assistant.usage", (event) => {
+      usage.inputTokens += event.data.inputTokens ?? 0;
+      usage.outputTokens += event.data.outputTokens ?? 0;
+      usage.cacheReadTokens += event.data.cacheReadTokens ?? 0;
+      usage.cacheWriteTokens += event.data.cacheWriteTokens ?? 0;
+      usage.totalCost += event.data.cost ?? 0;
+      usage.requestCount++;
+      if (isDebug) {
+        console.log(
+          `[copilot] usage: +${event.data.inputTokens ?? 0} in, +${event.data.outputTokens ?? 0} out, cost: ${event.data.cost?.toFixed(4) ?? "N/A"} (model: ${event.data.model})`
+        );
+      }
+    })
+  );
   if (isDebug) {
     unsubscribers.push(
       session.on("assistant.reasoning_delta", (event) => {
@@ -649,13 +672,16 @@ function attachSessionListeners(session, logLevel) {
       console.log(`[copilot] session idle`);
     })
   );
-  return () => {
-    for (const unsub of unsubscribers) {
-      try {
-        unsub();
-      } catch {
+  return {
+    detach: () => {
+      for (const unsub of unsubscribers) {
+        try {
+          unsub();
+        } catch {
+        }
       }
-    }
+    },
+    getUsage: () => usage
   };
 }
 var COPILOT_INSTRUCTIONS_PATHS = [
@@ -793,7 +819,7 @@ The repository contains an \`agents.md\` file with additional instructions for A
       // on a temporary clone that gets deleted after the review).
       hooks: buildSessionHooks(config.logLevel)
     });
-    const detachListeners = attachSessionListeners(session, config.logLevel);
+    const { detach, getUsage } = attachSessionListeners(session, config.logLevel);
     console.log(`[reviewer] Session created with model: ${config.copilotModel}`);
     const userPrompt = buildDiffPrompt(
       opts.mrTitle,
@@ -812,7 +838,11 @@ The repository contains an \`agents.md\` file with additional instructions for A
     }, 3e5);
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got response (${responseContent.length} chars)`);
-    detachListeners();
+    const usage = getUsage();
+    console.log(
+      `[reviewer] Usage: ${usage.requestCount} request(s), ${usage.inputTokens} input + ${usage.outputTokens} output tokens` + (usage.cacheReadTokens > 0 ? ` (${usage.cacheReadTokens} cached)` : "") + (usage.totalCost > 0 ? `, cost: $${usage.totalCost.toFixed(6)}` : "")
+    );
+    detach();
     await session.destroy();
     await client.stop();
     return parseReviewResponse(responseContent);
@@ -856,7 +886,7 @@ async function replyToComment(opts) {
       ...skillDirectories.length > 0 && { skillDirectories },
       hooks: buildSessionHooks(config.logLevel)
     });
-    const detachListeners = attachSessionListeners(session, config.logLevel);
+    const { detach, getUsage } = attachSessionListeners(session, config.logLevel);
     console.log(`[reviewer] Comment reply session created with model: ${config.copilotModel}`);
     const prompt = buildCommentReplyPrompt({
       mrTitle: opts.mrTitle,
@@ -875,7 +905,11 @@ async function replyToComment(opts) {
     }, 3e5);
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got reply (${responseContent.length} chars)`);
-    detachListeners();
+    const usage = getUsage();
+    console.log(
+      `[reviewer] Usage: ${usage.requestCount} request(s), ${usage.inputTokens} input + ${usage.outputTokens} output tokens` + (usage.cacheReadTokens > 0 ? ` (${usage.cacheReadTokens} cached)` : "") + (usage.totalCost > 0 ? `, cost: $${usage.totalCost.toFixed(6)}` : "")
+    );
+    detach();
     await session.destroy();
     await client.stop();
     return responseContent.trim();
