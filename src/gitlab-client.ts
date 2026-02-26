@@ -291,20 +291,18 @@ export class GitLabClient {
 
   /**
    * Create an inline diff draft note on a merge request.
-   * The commit_id ties the note to a specific commit so GitLab can resolve
-   * the correct file version for the position.
+   * Position's head_sha/base_sha/start_sha identify the diff version.
    */
   async createDraftDiffNote(
     projectId: number,
     mrIid: number,
     note: string,
     position: DiffPosition,
-    commitId: string,
   ): Promise<{ id: number }> {
     return this.request<{ id: number }>(
       "POST",
       `/projects/${projectId}/merge_requests/${mrIid}/draft_notes`,
-      { note, position, commit_id: commitId },
+      { note, position },
     );
   }
 
@@ -455,7 +453,6 @@ export class GitLabClient {
           mrIid,
           commentBody,
           position,
-          diffVersion.head_commit_sha,
         );
         posted++;
       } catch (err) {
