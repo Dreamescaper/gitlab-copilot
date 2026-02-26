@@ -73,10 +73,17 @@ https://gitlab.example.com/api/v4/projects/<reviewer_project_id>/ref/main/trigge
 │   ├── config.ts         # Environment variable loader
 │   ├── types.ts          # TypeScript types (webhook, API, review)
 │   ├── webhook.ts        # Event classification (MR review / comment reply / ignore)
-│   ├── gitlab-client.ts  # GitLab REST API client (diffs, discussions, comments)
+│   ├── gitlab-client.ts  # GitLab REST API client (diffs, discussions, draft notes)
 │   ├── jira-client.ts    # Jira Cloud API client (issue details + comments)
 │   ├── git.ts            # Git clone helper (shallow clone + cleanup)
-│   └── reviewer.ts       # Copilot SDK integration (review + comment reply)
+│   ├── reviewer.ts       # Copilot SDK integration (review + comment reply sessions)
+│   ├── gitlab-client.test.ts  # Tests for diff parsing and line resolution
+│   └── prompts/
+│       ├── review-system.ts        # System prompt for MR reviews
+│       ├── comment-reply-system.ts # System prompt for comment replies
+│       └── build-prompts.ts        # User prompt builders (diff prompt, reply prompt)
+├── test/
+│   └── fixtures/             # Test fixture files (webhook payloads)
 ├── .gitlab-ci.yml        # CI pipeline for the review job
 ├── package.json
 └── tsconfig.json
@@ -233,13 +240,15 @@ Example:
 
 ## How Comments Are Posted
 
-- **Draft notes workflow**: All review findings are created as draft notes, then published atomically via GitLab's `bulk_publish` API (equivalent to "Submit Review" with "Comment" action). This creates a single notification instead of one per comment.
+- **Draft notes workflow**: All review findings are created as draft notes (without `commit_id` — position SHAs are sufficient), then published atomically via GitLab's `bulk_publish` API (equivalent to "Submit Review" with "Comment" action). This creates a single notification instead of one per comment.
 - **Inline diff discussions**: Each finding is posted on the specific file and line. Includes severity indicator (🔴 critical, 🟡 warning, ℹ️ info).
+- **Correct line positioning**: For lines inside diff hunks, both `old_line` and `new_line` are set for context lines (so GitLab can compute `line_code`). For lines outside diff hunks (expanded context), `old_line` is computed from cumulative hunk offsets.
 - **Code suggestions**: When applicable, comments include GitLab suggestion blocks with single-line or multi-line range replacements (rendered as "Apply suggestion" buttons).
 - **Summary note**: Overall assessment posted separately as a simple note (not resolvable, not part of review threads).
 - **Duplicate detection**: Existing comments are checked before posting — re-triggering a review won't create duplicates.
-- **Fallback**: If an inline comment fails (e.g. line not in diff), it falls back to a general draft note.
+- **Fallback**: If an inline comment fails, it falls back to a general draft note with file:line prefix.
 - **Comment replies**: Posted directly in the discussion thread that triggered them.
+- **Usage tracking**: After each review/reply session, token usage and cost are logged to CI output.
 
 ## Troubleshooting
 
@@ -286,5 +295,8 @@ Set `LOG_LEVEL=debug` to also log tool results and model reasoning tokens:
 | **Diff metadata from API** | SHAs and line mappings needed for GitLab's `position` object when posting inline discussions |
 | **Optional Jira integration** | Provides business context without requiring Jira — gracefully skipped when not configured |
 | **Draft notes + bulk publish** | GitLab's "Submit Review" pattern — all comments posted atomically as a single review submission |
+| **Draft notes without commit_id** | GitLab's browser UI sends `commit_id: null` for draft notes — the position's `head_sha`/`base_sha`/`start_sha` already identify the diff version. Sending an explicit `commit_id` causes 400 errors when the MR head moves after the diff version is fetched |
+| **Diff line resolution** | `parseDiffLines()` tracks both `old_line` and `new_line` for each line in diff hunks. `computeOldLine()` resolves lines outside hunks using cumulative hunk offsets. This ensures all draft notes get proper `line_code` from GitLab |
+| **Prompts in separate files** | System prompts and prompt builders extracted to `src/prompts/` for readability and easier iteration |
 | **Native skills support** | Copilot SDK's `skillDirectories` avoids prompt bloat and supports complex skill structures |
 
