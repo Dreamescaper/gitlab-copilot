@@ -781,6 +781,7 @@ function parseReviewResponse(content) {
   }
 }
 async function reviewMergeRequest(opts) {
+  console.log(`[reviewer] \u{1F50D} Reviewing MR: "${opts.mrTitle}"`);
   const { config, repoDir, diffVersion } = opts;
   const { copilotInstructions, agentsInstructions, skillDirectories } = await loadProjectInstructions(repoDir);
   let systemPrompt = REVIEW_SYSTEM_PROMPT;
@@ -855,6 +856,7 @@ The repository contains an \`agents.md\` file with additional instructions for A
   }
 }
 async function replyToComment(opts) {
+  console.log(`[reviewer] \u{1F4AC} Replying to comment on MR: "${opts.mrTitle}"`);
   const { config, repoDir } = opts;
   const { copilotInstructions, agentsInstructions, skillDirectories } = await loadProjectInstructions(repoDir);
   let systemPrompt = COMMENT_REPLY_SYSTEM_PROMPT;

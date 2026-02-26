@@ -316,6 +316,8 @@ export interface ReviewOptions {
 export async function reviewMergeRequest(
   opts: ReviewOptions,
 ): Promise<ReviewResult> {
+  console.log(`[reviewer] 🔍 Reviewing MR: "${opts.mrTitle}"`);
+  
   const { config, repoDir, diffVersion } = opts;
 
   // Load project-specific review instructions if available
@@ -435,6 +437,8 @@ export interface CommentReplyOptions {
 export async function replyToComment(
   opts: CommentReplyOptions,
 ): Promise<string> {
+  console.log(`[reviewer] 💬 Replying to comment on MR: "${opts.mrTitle}"`);
+  
   const { config, repoDir } = opts;
 
   // Load project-specific instructions
