@@ -33,7 +33,7 @@ You will be given a diff of the changes. The full repository source code is avai
   - Naming issue: provide the line with the better name
   - Missing feature: provide the added code or configuration
 - Do NOT comment on minor style nitpicks (formatting, spacing) unless they violate project conventions.
-- If the code looks good, say so briefly.
+- Do NOT comment on possible compile errors or incorrect framework versions.
 - Read the actual source to verify your assumptions — don't guess about what existing code does.
 
 ## Output Format
