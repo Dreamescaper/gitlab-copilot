@@ -28,7 +28,7 @@ import { loadConfig } from "./config.js";
 import { GitLabClient } from "./gitlab-client.js";
 import { cloneRepository } from "./git.js";
 import { reviewMergeRequest, replyToComment } from "./reviewer.js";
-import { fetchJiraContext } from "./jira-client.js";
+
 import { classifyWebhookEvent } from "./webhook.js";
 import type {
   MergeRequestWebhookPayload,
@@ -135,9 +135,6 @@ async function handleCommentReply(
       }
     }
 
-    // ─── Fetch Jira context if available ─────────────────────────────────
-    const jiraContext = await fetchJiraContext(mr.title, config);
-
     // ─── Clone the target project ────────────────────────────────────────
     console.log("[review] Cloning target repository…");
     const clone = await cloneRepository(httpUrl, sourceBranch, config.gitlabToken);
@@ -155,7 +152,6 @@ async function handleCommentReply(
       diffContext,
       mrTitle: mr.title,
       mrUrl: mr.url,
-      jiraContext,
     });
 
     if (!reply) {
@@ -244,9 +240,6 @@ async function handleMergeRequestReview(
       return;
     }
 
-    // ─── Fetch Jira context if available ─────────────────────────────────────
-    const jiraContext = await fetchJiraContext(mrTitle, config);
-
     // ─── Run review ───────────────────────────────────────────────────
     console.log("[review] Running Copilot review…");
     const review = await reviewMergeRequest({
@@ -258,7 +251,6 @@ async function handleMergeRequestReview(
       sourceBranch,
       targetBranch,
       diffVersion,
-      jiraContext,
     });
     console.log(
       `[review] Review complete: ${review.comments.length} comment(s)`,

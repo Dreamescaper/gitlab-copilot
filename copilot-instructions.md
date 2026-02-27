@@ -68,6 +68,14 @@ Shallow clone helper. Clones target repo at MR source branch, includes `cleanup(
   - `computeOldLine` — 8 tests covering offset computation for out-of-hunk lines
 - Run: `npm test` or `npx vitest run`
 
+## Required Validation After Every Code Change
+
+- After each code change, always run:
+  1. `npm run build`
+  2. `npm test`
+- Treat both commands as mandatory unless the user explicitly asks to skip them.
+- If either command fails, report the failure and fix relevant issues before finalizing.
+
 ## Build
 
 - esbuild bundles to `dist/index.mjs` (ESM, node24 target)

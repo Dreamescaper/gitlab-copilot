@@ -9,7 +9,7 @@ import type {
 import { REVIEW_SYSTEM_PROMPT } from "./prompts/review-system.js";
 import { COMMENT_REPLY_SYSTEM_PROMPT } from "./prompts/comment-reply-system.js";
 import { buildDiffPrompt, buildCommentReplyPrompt } from "./prompts/build-prompts.js";
-import { buildSubmitReviewTool, parseReviewResponse } from "./tools.js";
+import { buildSubmitReviewTool, buildJiraIssueTool, parseReviewResponse } from "./tools.js";
 
 // ─── Session logging helpers ────────────────────────────────────────────────
 
@@ -248,8 +248,6 @@ export interface ReviewOptions {
   sourceBranch: string;
   targetBranch: string;
   diffVersion: MergeRequestDiffVersionDetail;
-  /** Jira issue context (formatted markdown), if available */
-  jiraContext?: string;
 }
 
 /**
@@ -291,8 +289,12 @@ export async function reviewMergeRequest(
     githubToken: config.githubToken,
   });
 
-  // Build the submit_review tool (captures structured result via closure)
+  // Build custom tools
   const { tool: submitReviewTool, getResult } = buildSubmitReviewTool();
+  const jiraTool = buildJiraIssueTool(config);
+  const customTools = jiraTool
+    ? [submitReviewTool, jiraTool]
+    : [submitReviewTool];
 
   try {
     const session = await client.createSession({
@@ -302,8 +304,8 @@ export async function reviewMergeRequest(
         mode: "append",
         content: systemPrompt,
       },
-      // Register our custom tool alongside the SDK's built-in ones
-      tools: [submitReviewTool],
+      // Register our custom tools alongside the SDK's built-in ones
+      tools: customTools,
       // Load skill directories natively via the SDK
       ...(skillDirectories.length > 0 && { skillDirectories }),
       // Tool call logging hooks — auto-approve all operations (read-only
@@ -323,7 +325,6 @@ export async function reviewMergeRequest(
       opts.sourceBranch,
       opts.targetBranch,
       diffVersion.diffs,
-      opts.jiraContext,
     );
 
     console.log(
@@ -390,8 +391,6 @@ export interface CommentReplyOptions {
   /** MR metadata for context */
   mrTitle: string;
   mrUrl: string;
-  /** Jira issue context (formatted markdown), if available */
-  jiraContext?: string;
 }
 
 /**
@@ -427,6 +426,10 @@ export async function replyToComment(
   });
 
   try {
+    // Build custom tools (Jira tool available in comment replies too)
+    const jiraTool = buildJiraIssueTool(config);
+    const customTools = jiraTool ? [jiraTool] : undefined;
+
     const session = await client.createSession({
       model: config.copilotModel,
       workingDirectory: repoDir,
@@ -434,6 +437,7 @@ export async function replyToComment(
         mode: "append",
         content: systemPrompt,
       },
+      ...(customTools && { tools: customTools }),
       ...(skillDirectories.length > 0 && { skillDirectories }),
       hooks: buildSessionHooks(config.logLevel),
     });
@@ -448,7 +452,6 @@ export async function replyToComment(
       filePath: opts.filePath,
       lineNumber: opts.lineNumber,
       diffContext: opts.diffContext,
-      jiraContext: opts.jiraContext,
       threadMessages: opts.threadMessages,
     });
 

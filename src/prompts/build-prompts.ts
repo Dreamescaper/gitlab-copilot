@@ -10,7 +10,6 @@ export function buildDiffPrompt(
   sourceBranch: string,
   targetBranch: string,
   diffs: DiffFile[],
-  jiraContext?: string,
 ): string {
   const filesDiff = diffs
     .filter((d) => !d.too_large && !d.collapsed)
@@ -33,17 +32,13 @@ export function buildDiffPrompt(
         `You can read them directly from the working directory: ${skipped.map((d) => d.new_path).join(", ")}`
       : "";
 
-  const jiraSection = jiraContext
-    ? `\n## Jira Issue Context\n\nThe following Jira issue(s) are referenced in this MR. Use this context to understand the business requirements and verify the implementation matches what was requested.\n\n${jiraContext}\n`
-    : "";
-
   return `# Merge Request: ${mrTitle}
 **Branch**: \`${sourceBranch}\` → \`${targetBranch}\`
 **URL**: ${mrUrl}
 
 ## Description
 ${mrDescription || "(no description)"}
-${jiraSection}
+
 ## Changed Files (${diffs.length} file(s))
 
 ${filesDiff}${skippedNote}
@@ -64,7 +59,6 @@ export function buildCommentReplyPrompt(opts: {
   filePath?: string;
   lineNumber?: number;
   diffContext?: string;
-  jiraContext?: string;
   threadMessages: Array<{ author: string; body: string; createdAt: string }>;
 }): string {
   let prompt = `# Merge Request: ${opts.mrTitle}\n**URL**: ${opts.mrUrl}\n\n`;
@@ -79,10 +73,6 @@ export function buildCommentReplyPrompt(opts: {
 
   if (opts.diffContext) {
     prompt += `## Diff\n\`\`\`diff\n${opts.diffContext}\n\`\`\`\n\n`;
-  }
-
-  if (opts.jiraContext) {
-    prompt += `## Jira Issue Context\n\n${opts.jiraContext}\n\n`;
   }
 
   prompt += `## Discussion Thread\n\n`;

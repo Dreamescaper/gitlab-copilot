@@ -35,6 +35,31 @@ export interface JiraIssue {
     assignee?: {
       displayName: string;
     } | null;
+    /** Parent issue (epic/story) — available in Jira Cloud and next-gen projects. */
+    parent?: {
+      key: string;
+      fields: {
+        summary: string;
+        issuetype: { name: string };
+        status: { name: string };
+      };
+    };
+    /** Classic epic link field (Jira Server / classic projects). */
+    epic?: {
+      key: string;
+      name: string;
+    } | null;
+    /** Linked issues (blocks, is blocked by, relates to, etc.). */
+    issuelinks?: Array<{
+      type: { name: string; inward: string; outward: string };
+      inwardIssue?: { key: string; fields: { summary: string; status: { name: string }; issuetype: { name: string } } };
+      outwardIssue?: { key: string; fields: { summary: string; status: { name: string }; issuetype: { name: string } } };
+    }>;
+    /** Sub-tasks of this issue. */
+    subtasks?: Array<{
+      key: string;
+      fields: { summary: string; status: { name: string }; issuetype: { name: string } };
+    }>;
   };
 }
 
@@ -57,6 +82,12 @@ export interface JiraIssueContext {
   assignee?: string;
   labels?: string[];
   description: string | null;
+  /** Parent issue (epic or story that this issue belongs to). */
+  parent?: { key: string; summary: string; type: string; status: string };
+  /** Linked issues (blocks, relates to, etc.). */
+  links: Array<{ relationship: string; key: string; summary: string; type: string; status: string }>;
+  /** Sub-tasks. */
+  subtasks: Array<{ key: string; summary: string; type: string; status: string }>;
   comments: Array<{
     author: string;
     body: string;
@@ -104,7 +135,7 @@ export class JiraClient {
    */
   async getIssue(issueKey: string): Promise<JiraIssue> {
     return this.request<JiraIssue>(
-      `/issue/${issueKey}?fields=summary,description,status,issuetype,priority,labels,assignee`,
+      `/issue/${issueKey}?fields=summary,description,status,issuetype,priority,labels,assignee,parent,epic,issuelinks,subtasks`,
     );
   }
 
@@ -128,6 +159,54 @@ export class JiraClient {
       this.getIssueComments(issueKey),
     ]);
 
+    // Resolve parent: prefer the `parent` field, fall back to classic `epic` link
+    let parent: JiraIssueContext["parent"];
+    if (issue.fields.parent) {
+      const p = issue.fields.parent;
+      parent = {
+        key: p.key,
+        summary: p.fields.summary,
+        type: p.fields.issuetype.name,
+        status: p.fields.status.name,
+      };
+    } else if (issue.fields.epic) {
+      parent = {
+        key: issue.fields.epic.key,
+        summary: issue.fields.epic.name,
+        type: "Epic",
+        status: "Unknown",
+      };
+    }
+
+    // Flatten issue links into a uniform shape
+    const links: JiraIssueContext["links"] = (issue.fields.issuelinks ?? []).map((link) => {
+      if (link.outwardIssue) {
+        return {
+          relationship: link.type.outward,
+          key: link.outwardIssue.key,
+          summary: link.outwardIssue.fields.summary,
+          type: link.outwardIssue.fields.issuetype.name,
+          status: link.outwardIssue.fields.status.name,
+        };
+      }
+      const inward = link.inwardIssue!;
+      return {
+        relationship: link.type.inward,
+        key: inward.key,
+        summary: inward.fields.summary,
+        type: inward.fields.issuetype.name,
+        status: inward.fields.status.name,
+      };
+    });
+
+    // Sub-tasks
+    const subtasks: JiraIssueContext["subtasks"] = (issue.fields.subtasks ?? []).map((st) => ({
+      key: st.key,
+      summary: st.fields.summary,
+      type: st.fields.issuetype.name,
+      status: st.fields.status.name,
+    }));
+
     return {
       key: issue.key,
       summary: issue.fields.summary,
@@ -137,6 +216,9 @@ export class JiraClient {
       assignee: issue.fields.assignee?.displayName ?? undefined,
       labels: issue.fields.labels,
       description: issue.fields.description,
+      parent,
+      links,
+      subtasks,
       comments: commentsResult.comments.map((c) => ({
         author: c.author.displayName,
         body: c.body,
@@ -181,7 +263,7 @@ export async function fetchJiraContext(
   return contexts.map(formatIssueContext).join("\n\n");
 }
 
-function formatIssueContext(ctx: JiraIssueContext): string {
+export function formatIssueContext(ctx: JiraIssueContext): string {
   let result = `### ${ctx.key}: ${ctx.summary}\n`;
   result += `**Type**: ${ctx.type} | **Status**: ${ctx.status}`;
   if (ctx.priority) result += ` | **Priority**: ${ctx.priority}`;
@@ -190,6 +272,25 @@ function formatIssueContext(ctx: JiraIssueContext): string {
     result += `\n**Labels**: ${ctx.labels.join(", ")}`;
   }
   result += "\n";
+
+  if (ctx.parent) {
+    result += `\n**Parent**: ${ctx.parent.key} — ${ctx.parent.summary} (${ctx.parent.type}, ${ctx.parent.status})`;
+    result += `\n_Use \`get_jira_issue("${ctx.parent.key}")\` to fetch full parent details._\n`;
+  }
+
+  if (ctx.links.length > 0) {
+    result += `\n**Linked Issues** (${ctx.links.length}):\n`;
+    for (const link of ctx.links) {
+      result += `- _${link.relationship}_ **${link.key}**: ${link.summary} (${link.type}, ${link.status})\n`;
+    }
+  }
+
+  if (ctx.subtasks.length > 0) {
+    result += `\n**Sub-tasks** (${ctx.subtasks.length}):\n`;
+    for (const st of ctx.subtasks) {
+      result += `- **${st.key}**: ${st.summary} (${st.type}, ${st.status})\n`;
+    }
+  }
 
   if (ctx.description) {
     result += `\n**Description**:\n${ctx.description}\n`;

@@ -455,33 +455,16 @@ You will be given a diff of the changes. The full repository source code is avai
 - Do NOT comment on minor style nitpicks (formatting, spacing) unless they violate project conventions.
 - Do NOT comment on possible compile errors or incorrect framework versions.
 - Read the actual source to verify your assumptions \u2014 don't guess about what existing code does.
+- If you see Jira issue keys (e.g. PROJ-123) in the MR title, branch name, or description, use the **get_jira_issue** tool to fetch the requirements and verify the implementation matches.
 
 ## Output Format
 
-When you have finished your review, respond with ONLY valid JSON matching this exact schema (no markdown fences, no preamble):
+When you have finished your review, call the **submit_review** tool exactly once with your results.
 
-{
-  "summary": "A 2-4 sentence overall assessment of the MR, including what it does and your confidence level.",
-  "comments": [
-    {
-      "file": "path/to/file.ts",
-      "line": 42,
-      "body": "Description of the issue and suggested fix.",
-      "severity": "info | warning | critical",
-      "suggestion": "(optional) Suggested replacement code.",
-      "startLine": 40,
-      "endLine": 44
-    }
-  ]
-}
+- "line" is where the comment thread attaches; "startLine" and "endLine" describe the range being replaced by a suggestion.
+- If there are no issues, call submit_review with an empty comments array and a positive summary.
 
-Note: line is where the comment attaches; startLine and endLine describe the range being replaced (if suggestion spans multiple lines).
-
-If there are no issues, return:
-{
-  "summary": "The changes look good. No significant issues found.",
-  "comments": []
-}`;
+Do NOT output raw JSON in your response text \u2014 always use the submit_review tool.`;
 
 // src/prompts/comment-reply-system.ts
 var COMMENT_REPLY_SYSTEM_PROMPT = `You are an expert developer assistant responding to a comment on a GitLab Merge Request.
@@ -527,7 +510,7 @@ Rules for suggestions:
 - If the discussion is a general MR comment (not on a specific line), use regular code blocks instead.`;
 
 // src/prompts/build-prompts.ts
-function buildDiffPrompt(mrTitle, mrDescription, mrUrl, sourceBranch, targetBranch, diffs, jiraContext) {
+function buildDiffPrompt(mrTitle, mrDescription, mrUrl, sourceBranch, targetBranch, diffs) {
   const filesDiff = diffs.filter((d) => !d.too_large && !d.collapsed).map((d) => {
     const status = d.new_file ? "(new file)" : d.deleted_file ? "(deleted)" : d.renamed_file ? `(renamed from ${d.old_path})` : "";
     return `### ${d.new_path} ${status}
@@ -539,20 +522,13 @@ ${d.diff}
   const skippedNote = skipped.length > 0 ? `
 
 > **Note**: ${skipped.length} file(s) were too large to include in the diff. You can read them directly from the working directory: ${skipped.map((d) => d.new_path).join(", ")}` : "";
-  const jiraSection = jiraContext ? `
-## Jira Issue Context
-
-The following Jira issue(s) are referenced in this MR. Use this context to understand the business requirements and verify the implementation matches what was requested.
-
-${jiraContext}
-` : "";
   return `# Merge Request: ${mrTitle}
 **Branch**: \`${sourceBranch}\` \u2192 \`${targetBranch}\`
 **URL**: ${mrUrl}
 
 ## Description
 ${mrDescription || "(no description)"}
-${jiraSection}
+
 ## Changed Files (${diffs.length} file(s))
 
 ${filesDiff}${skippedNote}
@@ -561,7 +537,7 @@ ${filesDiff}${skippedNote}
 
 Please review the above changes. The full repository is available in your working directory \u2014 read related source files, imports, tests, documentation, and configuration to understand context before producing your review.
 
-When done, output your review as JSON.`;
+When done, call the **submit_review** tool with your review.`;
 }
 function buildCommentReplyPrompt(opts) {
   let prompt = `# Merge Request: ${opts.mrTitle}
@@ -584,13 +560,6 @@ ${opts.diffContext}
 
 `;
   }
-  if (opts.jiraContext) {
-    prompt += `## Jira Issue Context
-
-${opts.jiraContext}
-
-`;
-  }
   prompt += `## Discussion Thread
 
 `;
@@ -604,6 +573,322 @@ ${msg.body}
   }
   prompt += `Please respond to the latest message in this discussion thread. Provide a helpful and specific answer.`;
   return prompt;
+}
+
+// src/jira-client.ts
+var JiraClient = class {
+  baseUrl;
+  authHeader;
+  constructor(jiraConfig) {
+    this.baseUrl = `${jiraConfig.url}/rest/api/2`;
+    const credentials = Buffer.from(
+      `${jiraConfig.email}:${jiraConfig.apiToken}`
+    ).toString("base64");
+    this.authHeader = `Basic ${credentials}`;
+  }
+  async request(path) {
+    const url = `${this.baseUrl}${path}`;
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: this.authHeader,
+        Accept: "application/json"
+      }
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(
+        `Jira API error: ${response.status} ${response.statusText} \u2013 ${text}`
+      );
+    }
+    return response.json();
+  }
+  /**
+   * Fetch issue details by key (e.g. "AO2-2624").
+   */
+  async getIssue(issueKey) {
+    return this.request(
+      `/issue/${issueKey}?fields=summary,description,status,issuetype,priority,labels,assignee,parent,epic,issuelinks,subtasks`
+    );
+  }
+  /**
+   * Fetch comments on an issue.
+   */
+  async getIssueComments(issueKey) {
+    return this.request(
+      `/issue/${issueKey}/comment?orderBy=created`
+    );
+  }
+  /**
+   * Fetch full context for an issue: details + comments.
+   */
+  async getIssueContext(issueKey) {
+    const [issue, commentsResult] = await Promise.all([
+      this.getIssue(issueKey),
+      this.getIssueComments(issueKey)
+    ]);
+    let parent;
+    if (issue.fields.parent) {
+      const p = issue.fields.parent;
+      parent = {
+        key: p.key,
+        summary: p.fields.summary,
+        type: p.fields.issuetype.name,
+        status: p.fields.status.name
+      };
+    } else if (issue.fields.epic) {
+      parent = {
+        key: issue.fields.epic.key,
+        summary: issue.fields.epic.name,
+        type: "Epic",
+        status: "Unknown"
+      };
+    }
+    const links = (issue.fields.issuelinks ?? []).map((link) => {
+      if (link.outwardIssue) {
+        return {
+          relationship: link.type.outward,
+          key: link.outwardIssue.key,
+          summary: link.outwardIssue.fields.summary,
+          type: link.outwardIssue.fields.issuetype.name,
+          status: link.outwardIssue.fields.status.name
+        };
+      }
+      const inward = link.inwardIssue;
+      return {
+        relationship: link.type.inward,
+        key: inward.key,
+        summary: inward.fields.summary,
+        type: inward.fields.issuetype.name,
+        status: inward.fields.status.name
+      };
+    });
+    const subtasks = (issue.fields.subtasks ?? []).map((st) => ({
+      key: st.key,
+      summary: st.fields.summary,
+      type: st.fields.issuetype.name,
+      status: st.fields.status.name
+    }));
+    return {
+      key: issue.key,
+      summary: issue.fields.summary,
+      type: issue.fields.issuetype.name,
+      status: issue.fields.status.name,
+      priority: issue.fields.priority?.name,
+      assignee: issue.fields.assignee?.displayName ?? void 0,
+      labels: issue.fields.labels,
+      description: issue.fields.description,
+      parent,
+      links,
+      subtasks,
+      comments: commentsResult.comments.map((c) => ({
+        author: c.author.displayName,
+        body: c.body,
+        created: c.created
+      }))
+    };
+  }
+};
+function formatIssueContext(ctx) {
+  let result = `### ${ctx.key}: ${ctx.summary}
+`;
+  result += `**Type**: ${ctx.type} | **Status**: ${ctx.status}`;
+  if (ctx.priority) result += ` | **Priority**: ${ctx.priority}`;
+  if (ctx.assignee) result += ` | **Assignee**: ${ctx.assignee}`;
+  if (ctx.labels && ctx.labels.length > 0) {
+    result += `
+**Labels**: ${ctx.labels.join(", ")}`;
+  }
+  result += "\n";
+  if (ctx.parent) {
+    result += `
+**Parent**: ${ctx.parent.key} \u2014 ${ctx.parent.summary} (${ctx.parent.type}, ${ctx.parent.status})`;
+    result += `
+_Use \`get_jira_issue("${ctx.parent.key}")\` to fetch full parent details._
+`;
+  }
+  if (ctx.links.length > 0) {
+    result += `
+**Linked Issues** (${ctx.links.length}):
+`;
+    for (const link of ctx.links) {
+      result += `- _${link.relationship}_ **${link.key}**: ${link.summary} (${link.type}, ${link.status})
+`;
+    }
+  }
+  if (ctx.subtasks.length > 0) {
+    result += `
+**Sub-tasks** (${ctx.subtasks.length}):
+`;
+    for (const st of ctx.subtasks) {
+      result += `- **${st.key}**: ${st.summary} (${st.type}, ${st.status})
+`;
+    }
+  }
+  if (ctx.description) {
+    result += `
+**Description**:
+${ctx.description}
+`;
+  }
+  if (ctx.comments.length > 0) {
+    result += `
+**Comments** (${ctx.comments.length}):
+`;
+    for (const comment of ctx.comments) {
+      const date = new Date(comment.created).toISOString().split("T")[0];
+      result += `
+> **${comment.author}** (${date}):
+> ${comment.body.replace(/\n/g, "\n> ")}
+`;
+    }
+  }
+  return result;
+}
+
+// src/tools.ts
+var SUBMIT_REVIEW_PARAMETERS = {
+  type: "object",
+  required: ["summary", "comments"],
+  additionalProperties: false,
+  properties: {
+    summary: {
+      type: "string",
+      description: "A 2-4 sentence overall assessment of the MR, including what it does and your confidence level."
+    },
+    comments: {
+      type: "array",
+      description: "Review comments. Empty array if no issues found.",
+      items: {
+        type: "object",
+        required: ["file", "line", "body", "severity"],
+        additionalProperties: false,
+        properties: {
+          file: {
+            type: "string",
+            description: "Path to the file being commented on."
+          },
+          line: {
+            type: "integer",
+            description: "The line number where the comment attaches (the discussion thread anchor)."
+          },
+          body: {
+            type: "string",
+            description: "Markdown description of the issue and suggested fix."
+          },
+          severity: {
+            type: "string",
+            enum: ["info", "warning", "critical"],
+            description: "Severity of the issue."
+          },
+          suggestion: {
+            type: "string",
+            description: "Optional replacement code for the line(s). If provided, this will be rendered as a GitLab suggestion block."
+          },
+          startLine: {
+            type: "integer",
+            description: "Start of the range to replace (if suggestion spans multiple lines)."
+          },
+          endLine: {
+            type: "integer",
+            description: "End of the range to replace (if suggestion spans multiple lines)."
+          }
+        }
+      }
+    }
+  }
+};
+function buildSubmitReviewTool() {
+  let captured;
+  const tool = {
+    name: "submit_review",
+    description: "Submit the final code review. Call this exactly once when your review is complete.",
+    parameters: SUBMIT_REVIEW_PARAMETERS,
+    handler: (args) => {
+      captured = normalizeReviewResult(args);
+      return "Review submitted successfully.";
+    }
+  };
+  return { tool, getResult: () => captured };
+}
+var GET_JIRA_ISSUE_PARAMETERS = {
+  type: "object",
+  required: ["issueKey"],
+  additionalProperties: false,
+  properties: {
+    issueKey: {
+      type: "string",
+      description: "The Jira issue key (e.g. PROJ-123, AO2-2624)."
+    }
+  }
+};
+function buildJiraIssueTool(config) {
+  if (!config.jira) return void 0;
+  const client = new JiraClient(config.jira);
+  return {
+    name: "get_jira_issue",
+    description: "Fetch a Jira issue's details, including summary, description, status, priority, labels, and comments. Use this when you see Jira issue keys (e.g. PROJ-123) in the MR title, branch name, description, or code.",
+    parameters: GET_JIRA_ISSUE_PARAMETERS,
+    handler: async (args) => {
+      const key = args.issueKey.trim().toUpperCase();
+      console.log(`[jira] Tool call: fetching ${key}`);
+      try {
+        const ctx = await client.getIssueContext(key);
+        console.log(`[jira] Fetched ${key}: "${ctx.summary}" (${ctx.comments.length} comments)`);
+        return formatIssueContext(ctx);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[jira] Failed to fetch ${key}: ${msg}`);
+        return { resultType: "failure", textResultForLlm: `Failed to fetch Jira issue ${key}: ${msg}`, error: msg };
+      }
+    }
+  };
+}
+function normalizeReviewResult(raw) {
+  if (typeof raw.summary !== "string") {
+    raw.summary = "";
+  }
+  if (!Array.isArray(raw.comments)) {
+    raw.comments = [];
+  }
+  raw.comments = raw.comments.filter(
+    (c) => typeof c.file === "string" && typeof c.line === "number" && typeof c.body === "string"
+  ).map((c) => ({
+    file: c.file,
+    line: c.line,
+    body: c.body,
+    severity: ["info", "warning", "critical"].includes(c.severity) ? c.severity : "info",
+    suggestion: typeof c.suggestion === "string" ? c.suggestion : void 0,
+    startLine: typeof c.startLine === "number" ? c.startLine : void 0,
+    endLine: typeof c.endLine === "number" ? c.endLine : void 0
+  }));
+  return raw;
+}
+function parseReviewResponse(content) {
+  let cleaned = content.trim();
+  const jsonBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*)\s*```/);
+  if (jsonBlockMatch) {
+    cleaned = jsonBlockMatch[1].trim();
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
+  }
+  if (!cleaned.startsWith("{")) {
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+    }
+  }
+  try {
+    return normalizeReviewResult(JSON.parse(cleaned));
+  } catch (err) {
+    console.error("[reviewer] Failed to parse Copilot response as JSON:", err);
+    console.error("[reviewer] Raw response:", content);
+    return {
+      summary: content,
+      comments: []
+    };
+  }
 }
 
 // src/reviewer.ts
@@ -741,43 +1026,6 @@ async function loadProjectInstructions(repoDir) {
     skillDirectories
   };
 }
-function parseReviewResponse(content) {
-  let cleaned = content.trim();
-  const jsonBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  if (jsonBlockMatch) {
-    cleaned = jsonBlockMatch[1].trim();
-  } else if (cleaned.startsWith("```")) {
-    cleaned = cleaned.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-  }
-  try {
-    const parsed = JSON.parse(cleaned);
-    if (typeof parsed.summary !== "string") {
-      throw new Error("Missing 'summary' field");
-    }
-    if (!Array.isArray(parsed.comments)) {
-      parsed.comments = [];
-    }
-    parsed.comments = parsed.comments.filter(
-      (c) => typeof c.file === "string" && typeof c.line === "number" && typeof c.body === "string"
-    ).map((c) => ({
-      file: c.file,
-      line: c.line,
-      body: c.body,
-      severity: ["info", "warning", "critical"].includes(c.severity) ? c.severity : "info",
-      suggestion: typeof c.suggestion === "string" ? c.suggestion : void 0,
-      startLine: typeof c.startLine === "number" ? c.startLine : void 0,
-      endLine: typeof c.endLine === "number" ? c.endLine : void 0
-    }));
-    return parsed;
-  } catch (err) {
-    console.error("[reviewer] Failed to parse Copilot response as JSON:", err);
-    console.error("[reviewer] Raw response:", content);
-    return {
-      summary: content,
-      comments: []
-    };
-  }
-}
 async function reviewMergeRequest(opts) {
   console.log(`[reviewer] \u{1F50D} Reviewing MR: "${opts.mrTitle}"`);
   const { config, repoDir, diffVersion } = opts;
@@ -804,6 +1052,9 @@ The repository contains an \`agents.md\` file with additional instructions for A
   const client = new CopilotClient({
     githubToken: config.githubToken
   });
+  const { tool: submitReviewTool, getResult } = buildSubmitReviewTool();
+  const jiraTool = buildJiraIssueTool(config);
+  const customTools = jiraTool ? [submitReviewTool, jiraTool] : [submitReviewTool];
   try {
     const session = await client.createSession({
       model: config.copilotModel,
@@ -812,6 +1063,8 @@ The repository contains an \`agents.md\` file with additional instructions for A
         mode: "append",
         content: systemPrompt
       },
+      // Register our custom tools alongside the SDK's built-in ones
+      tools: customTools,
       // Load skill directories natively via the SDK
       ...skillDirectories.length > 0 && { skillDirectories },
       // Tool call logging hooks — auto-approve all operations (read-only
@@ -826,8 +1079,7 @@ The repository contains an \`agents.md\` file with additional instructions for A
       opts.mrUrl,
       opts.sourceBranch,
       opts.targetBranch,
-      diffVersion.diffs,
-      opts.jiraContext
+      diffVersion.diffs
     );
     console.log(
       `[reviewer] Sending ${diffVersion.diffs.length} file(s) for review (prompt length: ${userPrompt.length} chars, workingDir: ${repoDir})`
@@ -844,6 +1096,16 @@ The repository contains an \`agents.md\` file with additional instructions for A
     detach();
     await session.destroy();
     await client.stop();
+    const toolResult = getResult();
+    if (toolResult) {
+      console.log(
+        `[reviewer] Review captured via submit_review tool call (${toolResult.comments.length} comment(s))`
+      );
+      return toolResult;
+    }
+    console.warn(
+      "[reviewer] Model did not call submit_review tool \u2014 falling back to text parsing"
+    );
     return parseReviewResponse(responseContent);
   } catch (err) {
     try {
@@ -876,6 +1138,8 @@ async function replyToComment(opts) {
     githubToken: config.githubToken
   });
   try {
+    const jiraTool = buildJiraIssueTool(config);
+    const customTools = jiraTool ? [jiraTool] : void 0;
     const session = await client.createSession({
       model: config.copilotModel,
       workingDirectory: repoDir,
@@ -883,6 +1147,7 @@ async function replyToComment(opts) {
         mode: "append",
         content: systemPrompt
       },
+      ...customTools && { tools: customTools },
       ...skillDirectories.length > 0 && { skillDirectories },
       hooks: buildSessionHooks(config.logLevel)
     });
@@ -894,7 +1159,6 @@ async function replyToComment(opts) {
       filePath: opts.filePath,
       lineNumber: opts.lineNumber,
       diffContext: opts.diffContext,
-      jiraContext: opts.jiraContext,
       threadMessages: opts.threadMessages
     });
     console.log(
@@ -920,132 +1184,6 @@ async function replyToComment(opts) {
     }
     throw err;
   }
-}
-
-// src/jira-client.ts
-var JIRA_KEY_PATTERN = /\b([A-Z][A-Z0-9]+-\d+)\b/g;
-function extractJiraKeys(text) {
-  const matches = text.match(JIRA_KEY_PATTERN);
-  if (!matches) return [];
-  return [...new Set(matches)];
-}
-var JiraClient = class {
-  baseUrl;
-  authHeader;
-  constructor(jiraConfig) {
-    this.baseUrl = `${jiraConfig.url}/rest/api/2`;
-    const credentials = Buffer.from(
-      `${jiraConfig.email}:${jiraConfig.apiToken}`
-    ).toString("base64");
-    this.authHeader = `Basic ${credentials}`;
-  }
-  async request(path) {
-    const url = `${this.baseUrl}${path}`;
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: this.authHeader,
-        Accept: "application/json"
-      }
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(
-        `Jira API error: ${response.status} ${response.statusText} \u2013 ${text}`
-      );
-    }
-    return response.json();
-  }
-  /**
-   * Fetch issue details by key (e.g. "AO2-2624").
-   */
-  async getIssue(issueKey) {
-    return this.request(
-      `/issue/${issueKey}?fields=summary,description,status,issuetype,priority,labels,assignee`
-    );
-  }
-  /**
-   * Fetch comments on an issue.
-   */
-  async getIssueComments(issueKey) {
-    return this.request(
-      `/issue/${issueKey}/comment?orderBy=created`
-    );
-  }
-  /**
-   * Fetch full context for an issue: details + comments.
-   */
-  async getIssueContext(issueKey) {
-    const [issue, commentsResult] = await Promise.all([
-      this.getIssue(issueKey),
-      this.getIssueComments(issueKey)
-    ]);
-    return {
-      key: issue.key,
-      summary: issue.fields.summary,
-      type: issue.fields.issuetype.name,
-      status: issue.fields.status.name,
-      priority: issue.fields.priority?.name,
-      assignee: issue.fields.assignee?.displayName ?? void 0,
-      labels: issue.fields.labels,
-      description: issue.fields.description,
-      comments: commentsResult.comments.map((c) => ({
-        author: c.author.displayName,
-        body: c.body,
-        created: c.created
-      }))
-    };
-  }
-};
-async function fetchJiraContext(text, config) {
-  if (!config.jira) return void 0;
-  const keys = extractJiraKeys(text);
-  if (keys.length === 0) return void 0;
-  console.log(`[jira] Found Jira keys: ${keys.join(", ")}`);
-  const client = new JiraClient(config.jira);
-  const contexts = [];
-  for (const key of keys) {
-    try {
-      const ctx = await client.getIssueContext(key);
-      contexts.push(ctx);
-      console.log(`[jira] Fetched ${key}: "${ctx.summary}" (${ctx.comments.length} comments)`);
-    } catch (err) {
-      console.warn(`[jira] Failed to fetch ${key}:`, err);
-    }
-  }
-  if (contexts.length === 0) return void 0;
-  return contexts.map(formatIssueContext).join("\n\n");
-}
-function formatIssueContext(ctx) {
-  let result = `### ${ctx.key}: ${ctx.summary}
-`;
-  result += `**Type**: ${ctx.type} | **Status**: ${ctx.status}`;
-  if (ctx.priority) result += ` | **Priority**: ${ctx.priority}`;
-  if (ctx.assignee) result += ` | **Assignee**: ${ctx.assignee}`;
-  if (ctx.labels && ctx.labels.length > 0) {
-    result += `
-**Labels**: ${ctx.labels.join(", ")}`;
-  }
-  result += "\n";
-  if (ctx.description) {
-    result += `
-**Description**:
-${ctx.description}
-`;
-  }
-  if (ctx.comments.length > 0) {
-    result += `
-**Comments** (${ctx.comments.length}):
-`;
-    for (const comment of ctx.comments) {
-      const date = new Date(comment.created).toISOString().split("T")[0];
-      result += `
-> **${comment.author}** (${date}):
-> ${comment.body.replace(/\n/g, "\n> ")}
-`;
-    }
-  }
-  return result;
 }
 
 // src/webhook.ts
@@ -1234,7 +1372,6 @@ async function handleCommentReply(payload, config) {
         console.warn("[review] Could not fetch diff context, continuing without it");
       }
     }
-    const jiraContext = await fetchJiraContext(mr.title, config);
     console.log("[review] Cloning target repository\u2026");
     const clone = await cloneRepository(httpUrl, sourceBranch, config.gitlabToken);
     cleanup = clone.cleanup;
@@ -1248,8 +1385,7 @@ async function handleCommentReply(payload, config) {
       lineNumber,
       diffContext,
       mrTitle: mr.title,
-      mrUrl: mr.url,
-      jiraContext
+      mrUrl: mr.url
     });
     if (!reply) {
       console.log("[review] Empty reply from Copilot, skipping.");
@@ -1319,7 +1455,6 @@ async function handleMergeRequestReview(payload, config) {
       console.log("[review] No diffs to review.");
       return;
     }
-    const jiraContext = await fetchJiraContext(mrTitle, config);
     console.log("[review] Running Copilot review\u2026");
     const review = await reviewMergeRequest({
       config,
@@ -1329,8 +1464,7 @@ async function handleMergeRequestReview(payload, config) {
       mrUrl,
       sourceBranch,
       targetBranch,
-      diffVersion,
-      jiraContext
+      diffVersion
     });
     console.log(
       `[review] Review complete: ${review.comments.length} comment(s)`

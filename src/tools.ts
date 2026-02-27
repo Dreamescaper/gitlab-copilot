@@ -1,5 +1,7 @@
 import type { Tool } from "@github/copilot-sdk";
+import type { Config } from "./config.js";
 import type { ReviewComment, ReviewResult } from "./types.js";
+import { JiraClient, formatIssueContext } from "./jira-client.js";
 
 // ─── submit_review tool ─────────────────────────────────────────────────────
 
@@ -84,6 +86,54 @@ export function buildSubmitReviewTool(): {
   };
 
   return { tool, getResult: () => captured };
+}
+
+// ─── get_jira_issue tool ─────────────────────────────────────────────────────
+
+const GET_JIRA_ISSUE_PARAMETERS = {
+  type: "object",
+  required: ["issueKey"],
+  additionalProperties: false,
+  properties: {
+    issueKey: {
+      type: "string",
+      description:
+        "The Jira issue key (e.g. PROJ-123, AO2-2624).",
+    },
+  },
+} as const;
+
+/**
+ * Build a get_jira_issue Tool backed by the Jira API.
+ * Returns undefined when Jira is not configured.
+ */
+export function buildJiraIssueTool(
+  config: Config,
+): Tool<{ issueKey: string }> | undefined {
+  if (!config.jira) return undefined;
+
+  const client = new JiraClient(config.jira);
+
+  return {
+    name: "get_jira_issue",
+    description:
+      "Fetch a Jira issue's details, including summary, description, status, priority, labels, and comments. " +
+      "Use this when you see Jira issue keys (e.g. PROJ-123) in the MR title, branch name, description, or code.",
+    parameters: GET_JIRA_ISSUE_PARAMETERS as unknown as Record<string, unknown>,
+    handler: async (args: { issueKey: string }) => {
+      const key = args.issueKey.trim().toUpperCase();
+      console.log(`[jira] Tool call: fetching ${key}`);
+      try {
+        const ctx = await client.getIssueContext(key);
+        console.log(`[jira] Fetched ${key}: "${ctx.summary}" (${ctx.comments.length} comments)`);
+        return formatIssueContext(ctx);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[jira] Failed to fetch ${key}: ${msg}`);
+        return { resultType: "failure" as const, textResultForLlm: `Failed to fetch Jira issue ${key}: ${msg}`, error: msg };
+      }
+    },
+  };
 }
 
 // ─── Normalisation / validation ─────────────────────────────────────────────

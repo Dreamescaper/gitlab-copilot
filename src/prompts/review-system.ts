@@ -35,6 +35,7 @@ You will be given a diff of the changes. The full repository source code is avai
 - Do NOT comment on minor style nitpicks (formatting, spacing) unless they violate project conventions.
 - Do NOT comment on possible compile errors or incorrect framework versions.
 - Read the actual source to verify your assumptions — don't guess about what existing code does.
+- If you see Jira issue keys (e.g. PROJ-123) in the MR title, branch name, or description, use the **get_jira_issue** tool to fetch the requirements and verify the implementation matches.
 
 ## Output Format
 
