@@ -59,7 +59,7 @@ function attachSessionListeners(session: { on: Function }, logLevel: string): {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
-    totalCost: 0,
+    totalModelMultiplier: 0,
     requestCount: 0,
   };
 
@@ -72,6 +72,9 @@ function attachSessionListeners(session: { on: Function }, logLevel: string): {
         outputTokens?: number;
         cacheReadTokens?: number;
         cacheWriteTokens?: number;
+        quotaSnapshots?: {
+          usedRequests?: number;
+        };
         cost?: number;
       };
     }) => {
@@ -79,13 +82,23 @@ function attachSessionListeners(session: { on: Function }, logLevel: string): {
       usage.outputTokens += event.data.outputTokens ?? 0;
       usage.cacheReadTokens += event.data.cacheReadTokens ?? 0;
       usage.cacheWriteTokens += event.data.cacheWriteTokens ?? 0;
-      usage.totalCost += event.data.cost ?? 0;
+      usage.totalModelMultiplier += event.data.cost ?? 0;
+
+      const usedRequests = event.data.quotaSnapshots?.usedRequests;
+      if (usedRequests !== undefined) {
+        if (usage.firstUsedRequests === undefined) {
+          usage.firstUsedRequests = usedRequests;
+        }
+        usage.lastUsedRequests = usedRequests;
+      }
+
       usage.requestCount++;
 
       if (isDebug) {
         console.log(
           `[copilot] usage: +${event.data.inputTokens ?? 0} in, +${event.data.outputTokens ?? 0} out, ` +
-          `cost: ${event.data.cost?.toFixed(4) ?? "N/A"} (model: ${event.data.model})`,
+          `multiplier: ${event.data.cost?.toFixed(4) ?? "N/A"}, ` +
+          `quotaSnapshots.usedRequests: ${usedRequests ?? "N/A"} (model: ${event.data.model})`,
         );
       }
     }),
@@ -129,8 +142,10 @@ interface UsageStats {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-  totalCost: number;
+  totalModelMultiplier: number;
   requestCount: number;
+  firstUsedRequests?: number;
+  lastUsedRequests?: number;
 }
 
 // ─── Project-specific instructions ──────────────────────────────────────────
@@ -332,6 +347,12 @@ export async function reviewMergeRequest(
       `(prompt length: ${userPrompt.length} chars, workingDir: ${repoDir})`,
     );
 
+    const usageBeforeReview = getUsage();
+    console.log(
+      `[reviewer] Quota before review: quotaSnapshots.usedRequests=` +
+      `${usageBeforeReview.lastUsedRequests ?? "N/A"}`,
+    );
+
     const response = await session.sendAndWait({
       prompt: userPrompt
     }, 300000);
@@ -345,7 +366,13 @@ export async function reviewMergeRequest(
       `[reviewer] Usage: ${usage.requestCount} request(s), ` +
       `${usage.inputTokens} input + ${usage.outputTokens} output tokens` +
       (usage.cacheReadTokens > 0 ? ` (${usage.cacheReadTokens} cached)` : "") +
-      (usage.totalCost > 0 ? `, cost: $${usage.totalCost.toFixed(6)}` : ""),
+      (usage.totalModelMultiplier > 0
+        ? `, total model multiplier: ${usage.totalModelMultiplier.toFixed(4)}`
+        : ""),
+    );
+    console.log(
+      `[reviewer] Quota after review: quotaSnapshots.usedRequests=` +
+      `${usage.lastUsedRequests ?? "N/A"}`,
     );
 
     detach();
@@ -473,7 +500,9 @@ export async function replyToComment(
       `[reviewer] Usage: ${usage.requestCount} request(s), ` +
       `${usage.inputTokens} input + ${usage.outputTokens} output tokens` +
       (usage.cacheReadTokens > 0 ? ` (${usage.cacheReadTokens} cached)` : "") +
-      (usage.totalCost > 0 ? `, cost: $${usage.totalCost.toFixed(6)}` : ""),
+      (usage.totalModelMultiplier > 0
+        ? `, total model multiplier: ${usage.totalModelMultiplier.toFixed(4)}`
+        : ""),
     );
 
     detach();

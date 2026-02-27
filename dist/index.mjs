@@ -920,7 +920,7 @@ function attachSessionListeners(session, logLevel) {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
-    totalCost: 0,
+    totalModelMultiplier: 0,
     requestCount: 0
   };
   unsubscribers.push(
@@ -929,11 +929,18 @@ function attachSessionListeners(session, logLevel) {
       usage.outputTokens += event.data.outputTokens ?? 0;
       usage.cacheReadTokens += event.data.cacheReadTokens ?? 0;
       usage.cacheWriteTokens += event.data.cacheWriteTokens ?? 0;
-      usage.totalCost += event.data.cost ?? 0;
+      usage.totalModelMultiplier += event.data.cost ?? 0;
+      const usedRequests = event.data.quotaSnapshots?.usedRequests;
+      if (usedRequests !== void 0) {
+        if (usage.firstUsedRequests === void 0) {
+          usage.firstUsedRequests = usedRequests;
+        }
+        usage.lastUsedRequests = usedRequests;
+      }
       usage.requestCount++;
       if (isDebug) {
         console.log(
-          `[copilot] usage: +${event.data.inputTokens ?? 0} in, +${event.data.outputTokens ?? 0} out, cost: ${event.data.cost?.toFixed(4) ?? "N/A"} (model: ${event.data.model})`
+          `[copilot] usage: +${event.data.inputTokens ?? 0} in, +${event.data.outputTokens ?? 0} out, multiplier: ${event.data.cost?.toFixed(4) ?? "N/A"}, quotaSnapshots.usedRequests: ${usedRequests ?? "N/A"} (model: ${event.data.model})`
         );
       }
     })
@@ -1084,6 +1091,10 @@ The repository contains an \`agents.md\` file with additional instructions for A
     console.log(
       `[reviewer] Sending ${diffVersion.diffs.length} file(s) for review (prompt length: ${userPrompt.length} chars, workingDir: ${repoDir})`
     );
+    const usageBeforeReview = getUsage();
+    console.log(
+      `[reviewer] Quota before review: quotaSnapshots.usedRequests=${usageBeforeReview.lastUsedRequests ?? "N/A"}`
+    );
     const response = await session.sendAndWait({
       prompt: userPrompt
     }, 3e5);
@@ -1091,7 +1102,10 @@ The repository contains an \`agents.md\` file with additional instructions for A
     console.log(`[reviewer] Got response (${responseContent.length} chars)`);
     const usage = getUsage();
     console.log(
-      `[reviewer] Usage: ${usage.requestCount} request(s), ${usage.inputTokens} input + ${usage.outputTokens} output tokens` + (usage.cacheReadTokens > 0 ? ` (${usage.cacheReadTokens} cached)` : "") + (usage.totalCost > 0 ? `, cost: $${usage.totalCost.toFixed(6)}` : "")
+      `[reviewer] Usage: ${usage.requestCount} request(s), ${usage.inputTokens} input + ${usage.outputTokens} output tokens` + (usage.cacheReadTokens > 0 ? ` (${usage.cacheReadTokens} cached)` : "") + (usage.totalModelMultiplier > 0 ? `, total model multiplier: ${usage.totalModelMultiplier.toFixed(4)}` : "")
+    );
+    console.log(
+      `[reviewer] Quota after review: quotaSnapshots.usedRequests=${usage.lastUsedRequests ?? "N/A"}`
     );
     detach();
     await session.destroy();
@@ -1171,7 +1185,7 @@ async function replyToComment(opts) {
     console.log(`[reviewer] Got reply (${responseContent.length} chars)`);
     const usage = getUsage();
     console.log(
-      `[reviewer] Usage: ${usage.requestCount} request(s), ${usage.inputTokens} input + ${usage.outputTokens} output tokens` + (usage.cacheReadTokens > 0 ? ` (${usage.cacheReadTokens} cached)` : "") + (usage.totalCost > 0 ? `, cost: $${usage.totalCost.toFixed(6)}` : "")
+      `[reviewer] Usage: ${usage.requestCount} request(s), ${usage.inputTokens} input + ${usage.outputTokens} output tokens` + (usage.cacheReadTokens > 0 ? ` (${usage.cacheReadTokens} cached)` : "") + (usage.totalModelMultiplier > 0 ? `, total model multiplier: ${usage.totalModelMultiplier.toFixed(4)}` : "")
     );
     detach();
     await session.destroy();
