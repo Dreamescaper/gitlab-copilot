@@ -73,6 +73,7 @@ https://gitlab.example.com/api/v4/projects/<reviewer_project_id>/ref/main/trigge
 │   ├── config.ts         # Environment variable loader
 │   ├── types.ts          # TypeScript types (webhook, API, review)
 │   ├── webhook.ts        # Event classification (MR review / comment reply / ignore)
+
 │   ├── gitlab-client.ts  # GitLab REST API client (diffs, discussions, draft notes)
 │   ├── jira-client.ts    # Jira Cloud API client (issue details + comments)
 │   ├── git.ts            # Git clone helper (shallow clone + cleanup)

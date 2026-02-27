@@ -38,27 +38,9 @@ You will be given a diff of the changes. The full repository source code is avai
 
 ## Output Format
 
-When you have finished your review, respond with ONLY valid JSON matching this exact schema (no markdown fences, no preamble):
+When you have finished your review, call the **submit_review** tool exactly once with your results.
 
-{
-  "summary": "A 2-4 sentence overall assessment of the MR, including what it does and your confidence level.",
-  "comments": [
-    {
-      "file": "path/to/file.ts",
-      "line": 42,
-      "body": "Description of the issue and suggested fix.",
-      "severity": "info | warning | critical",
-      "suggestion": "(optional) Suggested replacement code.",
-      "startLine": 40,
-      "endLine": 44
-    }
-  ]
-}
+- "line" is where the comment thread attaches; "startLine" and "endLine" describe the range being replaced by a suggestion.
+- If there are no issues, call submit_review with an empty comments array and a positive summary.
 
-Note: line is where the comment attaches; startLine and endLine describe the range being replaced (if suggestion spans multiple lines).
-
-If there are no issues, return:
-{
-  "summary": "The changes look good. No significant issues found.",
-  "comments": []
-}`;
+Do NOT output raw JSON in your response text — always use the submit_review tool.`;

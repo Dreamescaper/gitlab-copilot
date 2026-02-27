@@ -52,7 +52,7 @@ ${filesDiff}${skippedNote}
 
 Please review the above changes. The full repository is available in your working directory — read related source files, imports, tests, documentation, and configuration to understand context before producing your review.
 
-When done, output your review as JSON.`;
+When done, call the **submit_review** tool with your review.`;
 }
 
 /**

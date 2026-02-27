@@ -9,6 +9,7 @@ import type {
 import { REVIEW_SYSTEM_PROMPT } from "./prompts/review-system.js";
 import { COMMENT_REPLY_SYSTEM_PROMPT } from "./prompts/comment-reply-system.js";
 import { buildDiffPrompt, buildCommentReplyPrompt } from "./prompts/build-prompts.js";
+import { buildSubmitReviewTool, parseReviewResponse } from "./tools.js";
 
 // ─── Session logging helpers ────────────────────────────────────────────────
 
@@ -235,62 +236,6 @@ async function loadProjectInstructions(
   };
 }
 
-// ─── Response parser ────────────────────────────────────────────────────────
-
-function parseReviewResponse(content: string): ReviewResult {
-  // Try to extract JSON from markdown code fences
-  let cleaned = content.trim();
-
-  // Look for ```json...``` or ```...``` blocks
-  const jsonBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  if (jsonBlockMatch) {
-    cleaned = jsonBlockMatch[1]!.trim();
-  } else if (cleaned.startsWith("```")) {
-    // Fallback: old behavior if fence is at start
-    cleaned = cleaned.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-  }
-
-  try {
-    const parsed = JSON.parse(cleaned) as ReviewResult;
-
-    if (typeof parsed.summary !== "string") {
-      throw new Error("Missing 'summary' field");
-    }
-    if (!Array.isArray(parsed.comments)) {
-      parsed.comments = [];
-    }
-
-    parsed.comments = parsed.comments
-      .filter(
-        (c) =>
-          typeof c.file === "string" &&
-          typeof c.line === "number" &&
-          typeof c.body === "string",
-      )
-      .map((c) => ({
-        file: c.file,
-        line: c.line,
-        body: c.body,
-        severity: ["info", "warning", "critical"].includes(c.severity)
-          ? c.severity
-          : "info",
-        suggestion: typeof c.suggestion === "string" ? c.suggestion : undefined,
-        startLine: typeof c.startLine === "number" ? c.startLine : undefined,
-        endLine: typeof c.endLine === "number" ? c.endLine : undefined,
-      }));
-
-    return parsed;
-  } catch (err) {
-    console.error("[reviewer] Failed to parse Copilot response as JSON:", err);
-    console.error("[reviewer] Raw response:", content);
-
-    return {
-      summary: content,
-      comments: [],
-    };
-  }
-}
-
 // ─── Main review function ───────────────────────────────────────────────────
 
 export interface ReviewOptions {
@@ -346,6 +291,9 @@ export async function reviewMergeRequest(
     githubToken: config.githubToken,
   });
 
+  // Build the submit_review tool (captures structured result via closure)
+  const { tool: submitReviewTool, getResult } = buildSubmitReviewTool();
+
   try {
     const session = await client.createSession({
       model: config.copilotModel,
@@ -354,6 +302,8 @@ export async function reviewMergeRequest(
         mode: "append",
         content: systemPrompt,
       },
+      // Register our custom tool alongside the SDK's built-in ones
+      tools: [submitReviewTool],
       // Load skill directories natively via the SDK
       ...(skillDirectories.length > 0 && { skillDirectories }),
       // Tool call logging hooks — auto-approve all operations (read-only
@@ -401,6 +351,19 @@ export async function reviewMergeRequest(
     await session.destroy();
     await client.stop();
 
+    // Prefer the structured tool call result; fall back to text parsing
+    const toolResult = getResult();
+    if (toolResult) {
+      console.log(
+        `[reviewer] Review captured via submit_review tool call ` +
+        `(${toolResult.comments.length} comment(s))`,
+      );
+      return toolResult;
+    }
+
+    console.warn(
+      "[reviewer] Model did not call submit_review tool — falling back to text parsing",
+    );
     return parseReviewResponse(responseContent);
   } catch (err) {
     try {
