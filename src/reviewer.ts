@@ -6,8 +6,8 @@ import type {
   MergeRequestDiffVersionDetail,
   ReviewResult,
 } from "./types.js";
-import { REVIEW_SYSTEM_PROMPT } from "./prompts/review-system.js";
-import { COMMENT_REPLY_SYSTEM_PROMPT } from "./prompts/comment-reply-system.js";
+import { loadReviewSystemPrompt } from "./prompts/review-system.js";
+import { loadCommentReplySystemPrompt } from "./prompts/comment-reply-system.js";
 import { buildDiffPrompt, buildCommentReplyPrompt } from "./prompts/build-prompts.js";
 import { buildSubmitReviewTool, buildJiraIssueTool, parseReviewResponse } from "./tools.js";
 import { buildMcpServers } from "./mcp/config-loader.js";
@@ -324,7 +324,7 @@ export async function reviewMergeRequest(
   const { copilotInstructions, agentsInstructions, skillDirectories } =
     await loadProjectInstructions(repoDir);
 
-  let systemPrompt = REVIEW_SYSTEM_PROMPT;
+  let systemPrompt = await loadReviewSystemPrompt();
 
   if (copilotInstructions) {
     systemPrompt +=
@@ -474,7 +474,7 @@ export async function replyToComment(
   const { copilotInstructions, agentsInstructions, skillDirectories } =
     await loadProjectInstructions(repoDir);
 
-  let systemPrompt = COMMENT_REPLY_SYSTEM_PROMPT;
+  let systemPrompt = await loadCommentReplySystemPrompt();
 
   if (copilotInstructions) {
     systemPrompt +=

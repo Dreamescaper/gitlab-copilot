@@ -84,7 +84,9 @@ https://gitlab.example.com/api/v4/projects/<reviewer_project_id>/ref/main/trigge
 │   ├── gitlab-client.test.ts  # Tests for diff parsing and line resolution
 │   └── prompts/
 │       ├── review-system.ts        # System prompt for MR reviews
+│       ├── review-system.md        # Runtime-editable MR review system prompt
 │       ├── comment-reply-system.ts # System prompt for comment replies
+│       ├── comment-reply-system.md # Runtime-editable comment-reply system prompt
 │       └── build-prompts.ts        # User prompt builders (diff prompt, reply prompt)
 ├── test/
 │   └── fixtures/             # Test fixture files (webhook payloads)
@@ -215,6 +217,15 @@ Reviewer loads `mcp.json` from the repository root and passes configured servers
 - `${repoDir}` and `${workspaceFolder}` placeholders are resolved at runtime to the cloned MR repository path.
 - The included `mcp.json` config starts Serena (`uvx ... serena start-mcp-server`) with `--project ${repoDir}`.
 - Tool allow-lists are controlled per server in `mcp.json`.
+
+## Runtime-Editable System Prompts
+
+System prompts are loaded at runtime from markdown files (no app rebuild required):
+
+- `src/prompts/review-system.md`
+- `src/prompts/comment-reply-system.md`
+
+The TypeScript modules require these markdown files at runtime; if missing or empty, the review job fails fast with a clear error.
 
 ## Jira Integration
 
