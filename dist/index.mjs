@@ -29,6 +29,7 @@ function loadConfig() {
     gitlabBotUsername: requireEnv("GITLAB_BOT_USERNAME"),
     githubToken: requireEnv("GITHUB_TOKEN"),
     copilotModel: process.env["COPILOT_MODEL"] ?? "gpt-4.1",
+    copilotConfigDir: process.env["COPILOT_CONFIG_DIR"] ?? ".copilot-sessions",
     logLevel: process.env["LOG_LEVEL"] ?? "info",
     jira
   };
@@ -1033,6 +1034,34 @@ async function loadProjectInstructions(repoDir) {
     skillDirectories
   };
 }
+async function createOrResumeSession(client, sessionId, config, repoDir, systemPrompt, skillDirectories, tools) {
+  const baseSessionConfig = {
+    model: config.copilotModel,
+    configDir: config.copilotConfigDir,
+    onPermissionRequest: approveAll,
+    workingDirectory: repoDir,
+    systemMessage: {
+      mode: "append",
+      content: systemPrompt
+    },
+    infiniteSessions: { enabled: true },
+    ...tools && { tools },
+    ...skillDirectories.length > 0 && { skillDirectories },
+    hooks: buildSessionHooks(config.logLevel)
+  };
+  try {
+    const resumed = await client.resumeSession(sessionId, baseSessionConfig);
+    console.log(`[reviewer] Resumed session: ${sessionId}`);
+    return resumed;
+  } catch {
+    const created = await client.createSession({
+      ...baseSessionConfig,
+      sessionId
+    });
+    console.log(`[reviewer] Created new session: ${sessionId}`);
+    return created;
+  }
+}
 async function reviewMergeRequest(opts) {
   console.log(`[reviewer] \u{1F50D} Reviewing MR: "${opts.mrTitle}"`);
   const { config, repoDir, diffVersion } = opts;
@@ -1063,22 +1092,15 @@ The repository contains an \`agents.md\` file with additional instructions for A
   const jiraTool = buildJiraIssueTool(config);
   const customTools = jiraTool ? [submitReviewTool, jiraTool] : [submitReviewTool];
   try {
-    const session = await client.createSession({
-      model: config.copilotModel,
-      onPermissionRequest: approveAll,
-      workingDirectory: repoDir,
-      systemMessage: {
-        mode: "append",
-        content: systemPrompt
-      },
-      // Register our custom tools alongside the SDK's built-in ones
-      tools: customTools,
-      // Load skill directories natively via the SDK
-      ...skillDirectories.length > 0 && { skillDirectories },
-      // Tool call logging hooks — auto-approve all operations (read-only
-      // on a temporary clone that gets deleted after the review).
-      hooks: buildSessionHooks(config.logLevel)
-    });
+    const session = await createOrResumeSession(
+      client,
+      opts.sessionId,
+      config,
+      repoDir,
+      systemPrompt,
+      skillDirectories,
+      customTools
+    );
     const { detach, getUsage } = attachSessionListeners(session, config.logLevel);
     console.log(`[reviewer] Session created with model: ${config.copilotModel}`);
     const userPrompt = buildDiffPrompt(
@@ -1155,18 +1177,15 @@ async function replyToComment(opts) {
   try {
     const jiraTool = buildJiraIssueTool(config);
     const customTools = jiraTool ? [jiraTool] : void 0;
-    const session = await client.createSession({
-      model: config.copilotModel,
-      onPermissionRequest: approveAll,
-      workingDirectory: repoDir,
-      systemMessage: {
-        mode: "append",
-        content: systemPrompt
-      },
-      ...customTools && { tools: customTools },
-      ...skillDirectories.length > 0 && { skillDirectories },
-      hooks: buildSessionHooks(config.logLevel)
-    });
+    const session = await createOrResumeSession(
+      client,
+      opts.sessionId,
+      config,
+      repoDir,
+      systemPrompt,
+      skillDirectories,
+      customTools
+    );
     const { detach, getUsage } = attachSessionListeners(session, config.logLevel);
     console.log(`[reviewer] Comment reply session created with model: ${config.copilotModel}`);
     const prompt = buildCommentReplyPrompt({
@@ -1350,6 +1369,9 @@ async function main() {
   }
   await handleMergeRequestReview(event.payload, config);
 }
+function buildMergeRequestSessionId(projectId, mrIid) {
+  return `gitlab-mr-${projectId}-${mrIid}`;
+}
 async function handleCommentReply(payload, config) {
   const projectId = payload.project.id;
   const mr = payload.merge_request;
@@ -1357,6 +1379,7 @@ async function handleCommentReply(payload, config) {
   const discussionId = payload.object_attributes.discussion_id;
   const httpUrl = payload.project.http_url;
   const sourceBranch = mr.source_branch;
+  const sessionId = buildMergeRequestSessionId(projectId, mrIid);
   console.log(
     `[review] Responding to comment in discussion ${discussionId} on MR !${mrIid} in ${payload.project.path_with_namespace}`
   );
@@ -1396,6 +1419,7 @@ async function handleCommentReply(payload, config) {
     const reply = await replyToComment({
       config,
       repoDir: clone.dir,
+      sessionId,
       threadMessages,
       filePath,
       lineNumber,
@@ -1446,6 +1470,7 @@ async function handleMergeRequestReview(payload, config) {
   const projectUrl = payload.project.web_url;
   const httpUrl = payload.project.http_url;
   const mrUrl = `${projectUrl}/-/merge_requests/${mrIid}`;
+  const sessionId = buildMergeRequestSessionId(projectId, mrIid);
   console.log(
     `[review] MR !${mrIid} in project ${projectId}: ${mrTitle}
 [review] ${sourceBranch} \u2192 ${targetBranch}`
@@ -1475,6 +1500,7 @@ async function handleMergeRequestReview(payload, config) {
     const review = await reviewMergeRequest({
       config,
       repoDir: clone.dir,
+      sessionId,
       mrTitle,
       mrDescription,
       mrUrl,

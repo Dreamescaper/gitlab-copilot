@@ -81,6 +81,10 @@ async function main(): Promise<void> {
   await handleMergeRequestReview(event.payload, config);
 }
 
+function buildMergeRequestSessionId(projectId: number, mrIid: number): string {
+  return `gitlab-mr-${projectId}-${mrIid}`;
+}
+
 // ─── Comment Reply Handler ──────────────────────────────────────────────────
 
 async function handleCommentReply(
@@ -93,6 +97,7 @@ async function handleCommentReply(
   const discussionId = payload.object_attributes.discussion_id;
   const httpUrl = payload.project.http_url;
   const sourceBranch = mr.source_branch;
+  const sessionId = buildMergeRequestSessionId(projectId, mrIid);
 
   console.log(
     `[review] Responding to comment in discussion ${discussionId} ` +
@@ -146,6 +151,7 @@ async function handleCommentReply(
     const reply = await replyToComment({
       config,
       repoDir: clone.dir,
+      sessionId,
       threadMessages,
       filePath,
       lineNumber,
@@ -206,6 +212,7 @@ async function handleMergeRequestReview(
   const projectUrl = payload.project.web_url;
   const httpUrl = payload.project.http_url;
   const mrUrl = `${projectUrl}/-/merge_requests/${mrIid}`;
+  const sessionId = buildMergeRequestSessionId(projectId, mrIid);
 
   console.log(
     `[review] MR !${mrIid} in project ${projectId}: ${mrTitle}\n` +
@@ -245,6 +252,7 @@ async function handleMergeRequestReview(
     const review = await reviewMergeRequest({
       config,
       repoDir: clone.dir,
+      sessionId,
       mrTitle,
       mrDescription,
       mrUrl,

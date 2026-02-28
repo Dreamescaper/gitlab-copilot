@@ -257,12 +257,51 @@ export interface ReviewOptions {
   config: Config;
   /** Absolute path to the cloned repository */
   repoDir: string;
+  sessionId: string;
   mrTitle: string;
   mrDescription: string;
   mrUrl: string;
   sourceBranch: string;
   targetBranch: string;
   diffVersion: MergeRequestDiffVersionDetail;
+}
+
+async function createOrResumeSession(
+  client: CopilotClient,
+  sessionId: string,
+  config: Config,
+  repoDir: string,
+  systemPrompt: string,
+  skillDirectories: string[],
+  tools?: Parameters<CopilotClient["createSession"]>[0]["tools"],
+) {
+  const baseSessionConfig = {
+    model: config.copilotModel,
+    configDir: config.copilotConfigDir,
+    onPermissionRequest: approveAll,
+    workingDirectory: repoDir,
+    systemMessage: {
+      mode: "append" as const,
+      content: systemPrompt,
+    },
+    infiniteSessions: { enabled: true },
+    ...(tools && { tools }),
+    ...(skillDirectories.length > 0 && { skillDirectories }),
+    hooks: buildSessionHooks(config.logLevel),
+  };
+
+  try {
+    const resumed = await client.resumeSession(sessionId, baseSessionConfig);
+    console.log(`[reviewer] Resumed session: ${sessionId}`);
+    return resumed;
+  } catch {
+    const created = await client.createSession({
+      ...baseSessionConfig,
+      sessionId,
+    });
+    console.log(`[reviewer] Created new session: ${sessionId}`);
+    return created;
+  }
 }
 
 /**
@@ -312,22 +351,15 @@ export async function reviewMergeRequest(
     : [submitReviewTool];
 
   try {
-    const session = await client.createSession({
-      model: config.copilotModel,
-      onPermissionRequest: approveAll,
-      workingDirectory: repoDir,
-      systemMessage: {
-        mode: "append",
-        content: systemPrompt,
-      },
-      // Register our custom tools alongside the SDK's built-in ones
-      tools: customTools,
-      // Load skill directories natively via the SDK
-      ...(skillDirectories.length > 0 && { skillDirectories }),
-      // Tool call logging hooks — auto-approve all operations (read-only
-      // on a temporary clone that gets deleted after the review).
-      hooks: buildSessionHooks(config.logLevel),
-    });
+    const session = await createOrResumeSession(
+      client,
+      opts.sessionId,
+      config,
+      repoDir,
+      systemPrompt,
+      skillDirectories,
+      customTools,
+    );
 
     // Attach event listeners for errors/reasoning/usage visibility
     const { detach, getUsage } = attachSessionListeners(session, config.logLevel);
@@ -409,6 +441,7 @@ export async function reviewMergeRequest(
 export interface CommentReplyOptions {
   config: Config;
   repoDir: string;
+  sessionId: string;
   threadMessages: Array<{ author: string; body: string; createdAt: string }>;
   /** The file path if this is an inline diff discussion */
   filePath?: string;
@@ -458,18 +491,15 @@ export async function replyToComment(
     const jiraTool = buildJiraIssueTool(config);
     const customTools = jiraTool ? [jiraTool] : undefined;
 
-    const session = await client.createSession({
-      model: config.copilotModel,
-      onPermissionRequest: approveAll,
-      workingDirectory: repoDir,
-      systemMessage: {
-        mode: "append",
-        content: systemPrompt,
-      },
-      ...(customTools && { tools: customTools }),
-      ...(skillDirectories.length > 0 && { skillDirectories }),
-      hooks: buildSessionHooks(config.logLevel),
-    });
+    const session = await createOrResumeSession(
+      client,
+      opts.sessionId,
+      config,
+      repoDir,
+      systemPrompt,
+      skillDirectories,
+      customTools,
+    );
 
     const { detach, getUsage } = attachSessionListeners(session, config.logLevel);
 

@@ -12,6 +12,7 @@
  *
  * Optional environment variables:
  *   COPILOT_MODEL         – Model to use (default: gpt-4.1)
+ *   COPILOT_CONFIG_DIR    – Copilot SDK config/session directory (default: .copilot-sessions)
  *   LOG_LEVEL             – Logging verbosity (default: info)
  *
  * Optional Jira integration (all three required to enable):
@@ -26,6 +27,7 @@ export interface Config {
   gitlabBotUsername: string;
   githubToken: string;
   copilotModel: string;
+  copilotConfigDir: string;
   logLevel: string;
   jira?: {
     url: string;
@@ -68,6 +70,7 @@ export function loadConfig(): Config {
     gitlabBotUsername: requireEnv("GITLAB_BOT_USERNAME"),
     githubToken: requireEnv("GITHUB_TOKEN"),
     copilotModel: process.env["COPILOT_MODEL"] ?? "gpt-4.1",
+    copilotConfigDir: process.env["COPILOT_CONFIG_DIR"] ?? ".copilot-sessions",
     logLevel: process.env["LOG_LEVEL"] ?? "info",
     jira,
   };

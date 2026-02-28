@@ -15,6 +15,7 @@ Automated code review for GitLab Merge Requests powered by **GitHub Copilot SDK*
 - **Per-project customization** — supports `copilot-instructions.md` and `agents.md` for project-specific review guidelines
 - **Submit as review** — all comments are created as draft notes and published atomically as a single "Comment" review submission
 - **Copilot thinking logs** — see tool calls, file reads, and reasoning in CI logs (configurable via `LOG_LEVEL`)
+- **Persistent MR sessions** — re-reviews and comment replies for the same MR reuse the same Copilot session (`gitlab-mr-<projectId>-<mrIid>`)
 - **No infrastructure required** — runs on existing GitLab runners with no intermediary servers
 
 ## How It Works
@@ -179,10 +180,13 @@ In each target project, add the service account (e.g. `copilot-reviewer`) as a m
 | `GITLAB_BOT_USERNAME` | ✅ | Service account username |
 | `GITHUB_TOKEN` | ✅ | GitHub PAT with Copilot access |
 | `COPILOT_MODEL` | | Model to use (default: `gpt-4.1`) |
+| `COPILOT_CONFIG_DIR` | | Copilot SDK session/config directory (default: `.copilot-sessions`) |
 | `LOG_LEVEL` | | Logging level (default: `info`). Set to `debug` for full Copilot tool-call logging |
 | `JIRA_URL` | | Jira instance URL (e.g. `https://yourteam.atlassian.net`) |
 | `JIRA_EMAIL` | | Email for Jira API Basic auth |
 | `JIRA_API_TOKEN` | | Jira API token |
+
+For CI session persistence across pipeline runs, cache the configured `COPILOT_CONFIG_DIR` (in this repo's `.gitlab-ci.yml`, this is `$CI_PROJECT_DIR/.copilot-sessions`).
 
 ## Jira Integration
 

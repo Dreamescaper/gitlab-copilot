@@ -29,6 +29,14 @@ copilot-review:
   stage: review
   image: 
     name: node:24-slim
+  variables:
+    COPILOT_CONFIG_DIR: "$CI_PROJECT_DIR/.copilot-sessions"
+
+  cache:
+    key: "copilot-sessions-$CI_PROJECT_ID"
+    paths:
+      - .copilot-sessions/
+    policy: pull-push
 
   # Only run when triggered via the Pipeline Trigger API (webhook or manual)
   rules:
@@ -39,6 +47,8 @@ copilot-review:
   before_script:
     # Install git (needed to clone the target repo)
     - apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1
+    # Ensure persistent Copilot session directory exists
+    - mkdir -p "$COPILOT_CONFIG_DIR"
     # Install project dependencies
     - npm ci --ignore-scripts --silent 2>&1 | tail -1
 
