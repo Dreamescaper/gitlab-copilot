@@ -10,7 +10,7 @@ import { REVIEW_SYSTEM_PROMPT } from "./prompts/review-system.js";
 import { COMMENT_REPLY_SYSTEM_PROMPT } from "./prompts/comment-reply-system.js";
 import { buildDiffPrompt, buildCommentReplyPrompt } from "./prompts/build-prompts.js";
 import { buildSubmitReviewTool, buildJiraIssueTool, parseReviewResponse } from "./tools.js";
-import { buildSerenaMcpServers } from "./mcp/serena.js";
+import { buildMcpServers } from "./mcp/config-loader.js";
 
 // ─── Session logging helpers ────────────────────────────────────────────────
 
@@ -354,7 +354,7 @@ export async function reviewMergeRequest(
     : [submitReviewTool];
 
   try {
-    const mcpServers = await buildSerenaMcpServers(repoDir, config);
+    const mcpServers = await buildMcpServers(repoDir);
 
     const session = await createOrResumeSession(
       client,
@@ -496,7 +496,7 @@ export async function replyToComment(
     // Build custom tools (Jira tool available in comment replies too)
     const jiraTool = buildJiraIssueTool(config);
     const customTools = jiraTool ? [jiraTool] : undefined;
-    const mcpServers = await buildSerenaMcpServers(repoDir, config);
+    const mcpServers = await buildMcpServers(repoDir);
 
     const session = await createOrResumeSession(
       client,

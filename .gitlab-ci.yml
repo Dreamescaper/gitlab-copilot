@@ -17,8 +17,10 @@
 #
 # Optional:
 #   COPILOT_MODEL       – Model override (default: gpt-4.1)
-#   SERENA_ENABLED      – Set to true to enable Serena MCP in reviewer sessions
-#   SERENA_PROJECT_LANGUAGES – CSV language list for Serena project init (default: csharp)
+#
+# MCP configuration:
+#   mcp.json in repo root is loaded automatically by the reviewer.
+#   This project ships mcp.json with a Serena server entry (uvx).
 
 stages:
   - review
@@ -49,14 +51,11 @@ copilot-review:
   before_script:
     # Install git (needed to clone the target repo)
     - apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1
-    # Optional Serena prerequisite (uv) when Serena MCP is enabled
-    - |
-      if [ "${SERENA_ENABLED:-false}" = "true" ]; then
-        apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null 2>&1
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        export PATH="$HOME/.local/bin:$PATH"
-        uvx --version
-      fi
+    # Serena prerequisite for the default mcp.json (uses uvx)
+    - apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null 2>&1
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    - uvx --version
     # Ensure persistent Copilot session directory exists
     - mkdir -p "$COPILOT_CONFIG_DIR"
     # Install project dependencies

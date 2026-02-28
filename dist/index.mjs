@@ -1,35 +1,15 @@
 #!/usr/bin/env node
 
 // src/index.ts
-import { readFile as readFile2 } from "node:fs/promises";
+import { readFile as readFile3 } from "node:fs/promises";
 
 // src/config.ts
-var SERENA_DEFAULT_REVIEW_TOOLS = [
-  "get_current_config",
-  "find_file",
-  "list_dir",
-  "read_file",
-  "search_for_pattern",
-  "get_symbols_overview",
-  "find_symbol",
-  "find_referencing_symbols",
-  "restart_language_server"
-];
 function requireEnv(name) {
   const value = process.env[name];
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
-}
-function parseBoolean(value, defaultValue) {
-  if (value === void 0) return defaultValue;
-  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-}
-function parseCsv(value, fallback) {
-  if (!value) return fallback;
-  const items = value.split(",").map((item) => item.trim()).filter(Boolean);
-  return items.length > 0 ? items : fallback;
 }
 function loadConfig() {
   const gitlabUrl = process.env["CI_SERVER_URL"] ?? process.env["GITLAB_URL"];
@@ -43,23 +23,6 @@ function loadConfig() {
   if (jira) {
     console.log(`[config] Jira integration enabled (${jira.url})`);
   }
-  const serenaEnabled = parseBoolean(process.env["SERENA_ENABLED"], false);
-  const serena = serenaEnabled ? {
-    command: process.env["SERENA_COMMAND"] ?? "uvx",
-    runnerArgs: parseCsv(
-      process.env["SERENA_RUNNER_ARGS"],
-      ["--from", "git+https://github.com/oraios/serena", "serena"]
-    ),
-    context: process.env["SERENA_CONTEXT"] ?? "codex",
-    tools: parseCsv(process.env["SERENA_MCP_TOOLS"], SERENA_DEFAULT_REVIEW_TOOLS),
-    projectLanguages: parseCsv(process.env["SERENA_PROJECT_LANGUAGES"], ["csharp"]),
-    initializeProject: parseBoolean(process.env["SERENA_INIT_PROJECT"], true)
-  } : void 0;
-  if (serena) {
-    console.log(
-      `[config] Serena MCP enabled (context=${serena.context}, languages=${serena.projectLanguages.join(",")})`
-    );
-  }
   return {
     gitlabUrl: gitlabUrl.replace(/\/+$/, ""),
     gitlabToken: requireEnv("GITLAB_TOKEN"),
@@ -68,8 +31,7 @@ function loadConfig() {
     copilotModel: process.env["COPILOT_MODEL"] ?? "gpt-4.1",
     copilotConfigDir: process.env["COPILOT_CONFIG_DIR"] ?? ".copilot-sessions",
     logLevel: process.env["LOG_LEVEL"] ?? "info",
-    jira,
-    serena
+    jira
   };
 }
 
@@ -452,7 +414,7 @@ async function cloneRepository(gitHttpUrl, branch, gitlabToken) {
 }
 
 // src/reviewer.ts
-import { readFile, access as access2 } from "node:fs/promises";
+import { readFile as readFile2, access as access2 } from "node:fs/promises";
 import { join as join3 } from "node:path";
 import { CopilotClient, approveAll } from "@github/copilot-sdk";
 
@@ -930,55 +892,60 @@ function parseReviewResponse(content) {
   }
 }
 
-// src/mcp/serena.ts
-import { access } from "node:fs/promises";
+// src/mcp/config-loader.ts
+import { access, readFile } from "node:fs/promises";
 import { join as join2 } from "node:path";
-import { execFile as execFile2 } from "node:child_process";
-import { promisify as promisify2 } from "node:util";
-var execFileAsync2 = promisify2(execFile2);
-async function ensureSerenaProjectConfig(repoDir, config) {
-  const serena = config.serena;
-  if (!serena || !serena.initializeProject) return;
-  const projectConfigPath = join2(repoDir, ".serena", "project.yml");
-  try {
-    await access(projectConfigPath);
-    return;
-  } catch {
-  }
-  const languageArgs = serena.projectLanguages.flatMap((language) => ["--language", language]);
-  console.log(
-    `[reviewer] Initializing Serena project config (.serena/project.yml) with languages: ${serena.projectLanguages.join(", ")}`
-  );
-  await execFileAsync2(
-    serena.command,
-    [...serena.runnerArgs, "project", "create", ...languageArgs],
-    {
-      cwd: repoDir,
-      timeout: 12e4
-    }
-  );
+function interpolateString(value, replacements) {
+  return value.replace(/\$\{([^}]+)\}/g, (match, key) => {
+    return replacements[key] ?? match;
+  });
 }
-async function buildSerenaMcpServers(repoDir, config) {
-  const serena = config.serena;
-  if (!serena) return void 0;
-  await ensureSerenaProjectConfig(repoDir, config);
-  return {
-    serena: {
-      type: "stdio",
-      command: serena.command,
-      args: [
-        ...serena.runnerArgs,
-        "start-mcp-server",
-        "--context",
-        serena.context,
-        "--project",
-        repoDir,
-        "--open-web-dashboard",
-        "false"
-      ],
-      tools: serena.tools
+function interpolateValue(value, replacements) {
+  if (typeof value === "string") {
+    return interpolateString(value, replacements);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => interpolateValue(item, replacements));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => [
+        key,
+        interpolateValue(nested, replacements)
+      ])
+    );
+  }
+  return value;
+}
+function normalizeServers(servers) {
+  const normalizedEntries = Object.entries(servers).map(([name, raw]) => {
+    const server = { ...raw };
+    if (!Array.isArray(server["tools"])) {
+      server["tools"] = ["*"];
     }
-  };
+    return [name, server];
+  });
+  return Object.fromEntries(normalizedEntries);
+}
+async function buildMcpServers(repoDir) {
+  const configPath = join2(process.cwd(), "mcp.json");
+  try {
+    await access(configPath);
+  } catch {
+    return void 0;
+  }
+  const raw = await readFile(configPath, "utf-8");
+  const parsed = JSON.parse(raw);
+  if (!parsed.servers || Object.keys(parsed.servers).length === 0) {
+    return void 0;
+  }
+  const interpolated = interpolateValue(parsed.servers, {
+    repoDir,
+    workspaceFolder: repoDir
+  });
+  const mcpServers = normalizeServers(interpolated);
+  console.log(`[reviewer] Loaded MCP config from mcp.json (${Object.keys(mcpServers).length} server(s))`);
+  return mcpServers;
 }
 
 // src/reviewer.ts
@@ -1082,7 +1049,7 @@ var SKILLS_DIRS = [
 async function loadFirstFound(repoDir, candidates) {
   for (const relPath of candidates) {
     try {
-      const content = await readFile(join3(repoDir, relPath), "utf-8");
+      const content = await readFile2(join3(repoDir, relPath), "utf-8");
       return { path: relPath, content: content.trim() };
     } catch {
     }
@@ -1182,7 +1149,7 @@ The repository contains an \`agents.md\` file with additional instructions for A
   const jiraTool = buildJiraIssueTool(config);
   const customTools = jiraTool ? [submitReviewTool, jiraTool] : [submitReviewTool];
   try {
-    const mcpServers = await buildSerenaMcpServers(repoDir, config);
+    const mcpServers = await buildMcpServers(repoDir);
     const session = await createOrResumeSession(
       client,
       opts.sessionId,
@@ -1269,7 +1236,7 @@ async function replyToComment(opts) {
   try {
     const jiraTool = buildJiraIssueTool(config);
     const customTools = jiraTool ? [jiraTool] : void 0;
-    const mcpServers = await buildSerenaMcpServers(repoDir, config);
+    const mcpServers = await buildMcpServers(repoDir);
     const session = await createOrResumeSession(
       client,
       opts.sessionId,
@@ -1442,7 +1409,7 @@ async function loadTriggerPayload() {
       "TRIGGER_PAYLOAD variable not set. This job must be triggered via a webhook pipeline trigger."
     );
   }
-  const raw = await readFile2(payloadPath, "utf-8");
+  const raw = await readFile3(payloadPath, "utf-8");
   return JSON.parse(raw);
 }
 async function main() {
