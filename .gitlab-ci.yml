@@ -23,18 +23,43 @@
 #   This project ships mcp.json with a Serena server entry (uvx).
 
 stages:
+  - build-image
   - review
 
 default:
   tags:
     - scm-aws
 
+variables:
+  REVIEWER_IMAGE: "$CI_REGISTRY_IMAGE/reviewer"
+
+build-reviewer-image:
+  stage: build-image
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      when: on_success
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+    - when: never
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build -f Dockerfile.reviewer -t "$REVIEWER_IMAGE:$CI_COMMIT_SHA" -t "$REVIEWER_IMAGE:latest" .
+    - docker push "$REVIEWER_IMAGE:$CI_COMMIT_SHA"
+    - docker push "$REVIEWER_IMAGE:latest"
+
 copilot-review:
   stage: review
-  image: 
-    name: node:24-slim
+  image:
+    name: "$REVIEWER_IMAGE:latest"
   variables:
     COPILOT_CONFIG_DIR: "$CI_PROJECT_DIR/.copilot-sessions"
+    GIT_STRATEGY: none
 
   cache:
     key: "copilot-sessions-$CI_PROJECT_ID"
@@ -49,20 +74,13 @@ copilot-review:
     - when: never
 
   before_script:
-    # Install git (needed to clone the target repo)
-    - apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1
-    # Serena prerequisite for the default mcp.json (uses uvx)
-    - apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null 2>&1
-    - curl -LsSf https://astral.sh/uv/install.sh | sh
-    - export PATH="$HOME/.local/bin:$PATH"
-    - uvx --version
     # Ensure persistent Copilot session directory exists
     - mkdir -p "$COPILOT_CONFIG_DIR"
-    # Install project dependencies
-    - npm ci --ignore-scripts --silent 2>&1 | tail -1
+    - node --version
+    - uvx --version
 
   script:
-    - node dist/index.mjs
+    - node /opt/reviewer/dist/index.mjs
 
   timeout: 10m
 

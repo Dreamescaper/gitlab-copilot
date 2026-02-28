@@ -1,0 +1,20 @@
+FROM node:24-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_INSTALL_DIR=/usr/local/bin
+
+RUN apt-get update -qq \
+  && apt-get install -y -qq --no-install-recommends git curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+WORKDIR /opt/reviewer
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --silent 2>&1 | tail -1
+
+COPY dist ./dist
+COPY mcp.json ./mcp.json
+
+CMD ["node", "dist/index.mjs"]

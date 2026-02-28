@@ -89,12 +89,22 @@ https://gitlab.example.com/api/v4/projects/<reviewer_project_id>/ref/main/trigge
 ├── test/
 │   └── fixtures/             # Test fixture files (webhook payloads)
 ├── mcp.json               # MCP server definitions (loaded by reviewer at runtime)
+├── Dockerfile.reviewer    # Runtime image for fast review job execution
 ├── .gitlab-ci.yml        # CI pipeline for the review job
 ├── package.json
 └── tsconfig.json
 ```
 
 ## Setup
+
+### 0. Build Reviewer Runtime Image (one-time bootstrap)
+
+The review job now runs from a prebuilt container image (`$CI_REGISTRY_IMAGE/reviewer:latest`) that already contains Node, git, uv, production dependencies, `dist/`, and `mcp.json`.
+
+- On normal `push` pipelines, `.gitlab-ci.yml` builds and pushes this image automatically.
+- Triggered webhook pipelines (the fast review path) skip image build and use the latest pushed image.
+
+If this is a fresh project, run one push pipeline (or manually run `build-reviewer-image`) before the first webhook-triggered review.
 
 ### 1. Create the Reviewer Project
 
@@ -191,6 +201,12 @@ In each target project, add the service account (e.g. `copilot-reviewer`) as a m
 | `JIRA_API_TOKEN` | | Jira API token |
 
 For CI session persistence across pipeline runs, cache the configured `COPILOT_CONFIG_DIR` (in this repo's `.gitlab-ci.yml`, this is `$CI_PROJECT_DIR/.copilot-sessions`).
+
+## CI Pipeline Model
+
+- `build-reviewer-image` stage (push/manual): builds and pushes `reviewer:<sha>` and `reviewer:latest`.
+- `copilot-review` stage (trigger): uses the prebuilt `reviewer:latest` image and runs `node /opt/reviewer/dist/index.mjs`.
+- Review pipelines use `GIT_STRATEGY=none` for faster startup.
 
 ## MCP Configuration (`mcp.json`)
 
