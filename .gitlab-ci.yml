@@ -35,12 +35,9 @@ variables:
 
 build-reviewer-image:
   stage: build-image
-  image: docker:27
-  services:
-    - docker:27-dind
-  variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
       when: on_success
@@ -48,10 +45,12 @@ build-reviewer-image:
       when: manual
     - when: never
   script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-    - docker build -f Dockerfile.reviewer -t "$REVIEWER_IMAGE:$CI_COMMIT_SHA" -t "$REVIEWER_IMAGE:latest" .
-    - docker push "$REVIEWER_IMAGE:$CI_COMMIT_SHA"
-    - docker push "$REVIEWER_IMAGE:latest"
+    - mkdir -p /kaniko/.docker
+    - >-
+      cat > /kaniko/.docker/config.json <<EOF
+      {"auths":{"${CI_REGISTRY}":{"username":"${CI_REGISTRY_USER}","password":"${CI_REGISTRY_PASSWORD}"}}}
+      EOF
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile.reviewer" --destination "$REVIEWER_IMAGE:$CI_COMMIT_SHA" --destination "$REVIEWER_IMAGE:latest"
 
 copilot-review:
   stage: review
