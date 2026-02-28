@@ -415,7 +415,7 @@ async function cloneRepository(gitHttpUrl, branch, gitlabToken) {
 // src/reviewer.ts
 import { readFile, access } from "node:fs/promises";
 import { join as join2 } from "node:path";
-import { CopilotClient } from "@github/copilot-sdk";
+import { CopilotClient, approveAll } from "@github/copilot-sdk";
 
 // src/prompts/review-system.ts
 var REVIEW_SYSTEM_PROMPT = `You are an expert code reviewer performing a review on a GitLab Merge Request.
@@ -1065,6 +1065,7 @@ The repository contains an \`agents.md\` file with additional instructions for A
   try {
     const session = await client.createSession({
       model: config.copilotModel,
+      onPermissionRequest: approveAll,
       workingDirectory: repoDir,
       systemMessage: {
         mode: "append",
@@ -1156,6 +1157,7 @@ async function replyToComment(opts) {
     const customTools = jiraTool ? [jiraTool] : void 0;
     const session = await client.createSession({
       model: config.copilotModel,
+      onPermissionRequest: approveAll,
       workingDirectory: repoDir,
       systemMessage: {
         mode: "append",

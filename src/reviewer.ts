@@ -1,6 +1,6 @@
 import { readFile, access } from "node:fs/promises";
 import { join } from "node:path";
-import { CopilotClient } from "@github/copilot-sdk";
+import { CopilotClient, approveAll } from "@github/copilot-sdk";
 import type { Config } from "./config.js";
 import type {
   MergeRequestDiffVersionDetail,
@@ -314,6 +314,7 @@ export async function reviewMergeRequest(
   try {
     const session = await client.createSession({
       model: config.copilotModel,
+      onPermissionRequest: approveAll,
       workingDirectory: repoDir,
       systemMessage: {
         mode: "append",
@@ -459,6 +460,7 @@ export async function replyToComment(
 
     const session = await client.createSession({
       model: config.copilotModel,
+      onPermissionRequest: approveAll,
       workingDirectory: repoDir,
       systemMessage: {
         mode: "append",
