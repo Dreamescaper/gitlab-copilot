@@ -46,10 +46,7 @@ build-reviewer-image:
     - when: never
   script:
     - mkdir -p /kaniko/.docker
-    - >-
-      cat > /kaniko/.docker/config.json <<EOF
-      {"auths":{"${CI_REGISTRY}":{"username":"${CI_REGISTRY_USER}","password":"${CI_REGISTRY_PASSWORD}"}}}
-      EOF
+    - printf '{"auths":{"%s":{"username":"%s","password":"%s"}}}' "$CI_REGISTRY" "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" > /kaniko/.docker/config.json
     - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile.reviewer" --destination "$REVIEWER_IMAGE:$CI_COMMIT_SHA" --destination "$REVIEWER_IMAGE:latest"
 
 copilot-review:
