@@ -79,6 +79,8 @@ https://gitlab.example.com/api/v4/projects/<reviewer_project_id>/ref/main/trigge
 │   ├── jira-client.ts    # Jira Cloud API client (issue details + comments)
 │   ├── git.ts            # Git clone helper (shallow clone + cleanup)
 │   ├── reviewer.ts       # Copilot SDK integration (review + comment reply sessions)
+│   ├── mcp/
+│   │   └── serena.ts     # Serena MCP integration (project init + MCP server config)
 │   ├── gitlab-client.test.ts  # Tests for diff parsing and line resolution
 │   └── prompts/
 │       ├── review-system.ts        # System prompt for MR reviews
@@ -125,6 +127,9 @@ In the reviewer project, go to **Settings → CI/CD → Variables** and add:
 | `GITLAB_BOT_USERNAME` | Variable | No | No | `copilot-reviewer` |
 | `GITHUB_TOKEN` | Variable | No | ✅ | GitHub PAT with Copilot access |
 | `COPILOT_MODEL` | Variable | No | No | `gpt-4.1` (optional) |
+| `SERENA_ENABLED` | Variable | No | No | `true` (optional, enables Serena MCP) |
+| `SERENA_PROJECT_LANGUAGES` | Variable | No | No | `csharp` (optional, CSV) |
+| `SERENA_CONTEXT` | Variable | No | No | `codex` (optional) |
 | `JIRA_URL` | Variable | No | No | `https://yourteam.atlassian.net` (optional) |
 | `JIRA_EMAIL` | Variable | No | No | Email for Jira API auth (optional) |
 | `JIRA_API_TOKEN` | Variable | No | ✅ | Jira API token (optional) |
@@ -132,6 +137,7 @@ In the reviewer project, go to **Settings → CI/CD → Variables** and add:
 **Notes:**
 - `CI_SERVER_URL` (GitLab instance URL) is automatically available as a predefined CI variable.
 - Jira integration is optional — all three `JIRA_*` variables must be set to enable it. If not configured, Jira context is silently skipped.
+- Serena integration is optional — when `SERENA_ENABLED=true`, the reviewer starts Serena as an MCP server inside the CI job and wires it into Copilot sessions.
 
 ### 5. Configure Webhooks in Target Projects
 
@@ -182,11 +188,34 @@ In each target project, add the service account (e.g. `copilot-reviewer`) as a m
 | `COPILOT_MODEL` | | Model to use (default: `gpt-4.1`) |
 | `COPILOT_CONFIG_DIR` | | Copilot SDK session/config directory (default: `.copilot-sessions`) |
 | `LOG_LEVEL` | | Logging level (default: `info`). Set to `debug` for full Copilot tool-call logging |
+| `SERENA_ENABLED` | | Enable Serena MCP in reviewer sessions (`true`/`false`, default: `false`) |
+| `SERENA_COMMAND` | | Serena launcher command (default: `uvx`) |
+| `SERENA_RUNNER_ARGS` | | CSV args before Serena subcommand (default: `--from,git+https://github.com/oraios/serena,serena`) |
+| `SERENA_CONTEXT` | | Serena MCP context (default: `codex`) |
+| `SERENA_MCP_TOOLS` | | Serena MCP tool allow-list CSV (default: MR review subset; set `*` for all tools) |
+| `SERENA_PROJECT_LANGUAGES` | | Serena project languages CSV (default: `csharp`) |
+| `SERENA_INIT_PROJECT` | | Auto-create `.serena/project.yml` in cloned repo if missing (default: `true`) |
 | `JIRA_URL` | | Jira instance URL (e.g. `https://yourteam.atlassian.net`) |
 | `JIRA_EMAIL` | | Email for Jira API Basic auth |
 | `JIRA_API_TOKEN` | | Jira API token |
 
 For CI session persistence across pipeline runs, cache the configured `COPILOT_CONFIG_DIR` (in this repo's `.gitlab-ci.yml`, this is `$CI_PROJECT_DIR/.copilot-sessions`).
+
+## Serena MCP (GitLab Reviewer)
+
+This project can run [Serena](https://github.com/oraios/serena) as an MCP server inside the GitLab CI reviewer job (no local desktop setup required).
+
+When `SERENA_ENABLED=true`:
+
+1. The CI job installs `uv` (required by Serena).
+2. For each cloned MR repo, reviewer creates `.serena/project.yml` if missing.
+3. The default Serena language list is `csharp`, so C# analysis uses Serena's Roslyn backend.
+4. Copilot sessions start with Serena MCP attached via stdio.
+
+Notes:
+- Per Serena docs, C# uses Roslyn and requires .NET 10+; Serena can auto-install runtime dependencies if needed.
+- Context defaults to `codex` for best compatibility with Codex-like agent behavior.
+- By default, reviewer enables only MR-relevant Serena tools (`read_file`, symbol/search/navigation). Set `SERENA_MCP_TOOLS=*` to expose the full Serena toolbox (including editing tools).
 
 ## Jira Integration
 

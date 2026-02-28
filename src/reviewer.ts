@@ -10,6 +10,7 @@ import { REVIEW_SYSTEM_PROMPT } from "./prompts/review-system.js";
 import { COMMENT_REPLY_SYSTEM_PROMPT } from "./prompts/comment-reply-system.js";
 import { buildDiffPrompt, buildCommentReplyPrompt } from "./prompts/build-prompts.js";
 import { buildSubmitReviewTool, buildJiraIssueTool, parseReviewResponse } from "./tools.js";
+import { buildSerenaMcpServers } from "./mcp/serena.js";
 
 // ─── Session logging helpers ────────────────────────────────────────────────
 
@@ -274,6 +275,7 @@ async function createOrResumeSession(
   systemPrompt: string,
   skillDirectories: string[],
   tools?: Parameters<CopilotClient["createSession"]>[0]["tools"],
+  mcpServers?: Parameters<CopilotClient["createSession"]>[0]["mcpServers"],
 ) {
   const baseSessionConfig = {
     model: config.copilotModel,
@@ -286,6 +288,7 @@ async function createOrResumeSession(
     },
     infiniteSessions: { enabled: true },
     ...(tools && { tools }),
+    ...(mcpServers && { mcpServers }),
     ...(skillDirectories.length > 0 && { skillDirectories }),
     hooks: buildSessionHooks(config.logLevel),
   };
@@ -351,6 +354,8 @@ export async function reviewMergeRequest(
     : [submitReviewTool];
 
   try {
+    const mcpServers = await buildSerenaMcpServers(repoDir, config);
+
     const session = await createOrResumeSession(
       client,
       opts.sessionId,
@@ -359,6 +364,7 @@ export async function reviewMergeRequest(
       systemPrompt,
       skillDirectories,
       customTools,
+      mcpServers,
     );
 
     // Attach event listeners for errors/reasoning/usage visibility
@@ -490,6 +496,7 @@ export async function replyToComment(
     // Build custom tools (Jira tool available in comment replies too)
     const jiraTool = buildJiraIssueTool(config);
     const customTools = jiraTool ? [jiraTool] : undefined;
+    const mcpServers = await buildSerenaMcpServers(repoDir, config);
 
     const session = await createOrResumeSession(
       client,
@@ -499,6 +506,7 @@ export async function replyToComment(
       systemPrompt,
       skillDirectories,
       customTools,
+      mcpServers,
     );
 
     const { detach, getUsage } = attachSessionListeners(session, config.logLevel);

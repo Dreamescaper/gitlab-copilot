@@ -4,12 +4,32 @@
 import { readFile as readFile2 } from "node:fs/promises";
 
 // src/config.ts
+var SERENA_DEFAULT_REVIEW_TOOLS = [
+  "get_current_config",
+  "find_file",
+  "list_dir",
+  "read_file",
+  "search_for_pattern",
+  "get_symbols_overview",
+  "find_symbol",
+  "find_referencing_symbols",
+  "restart_language_server"
+];
 function requireEnv(name) {
   const value = process.env[name];
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
+}
+function parseBoolean(value, defaultValue) {
+  if (value === void 0) return defaultValue;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+function parseCsv(value, fallback) {
+  if (!value) return fallback;
+  const items = value.split(",").map((item) => item.trim()).filter(Boolean);
+  return items.length > 0 ? items : fallback;
 }
 function loadConfig() {
   const gitlabUrl = process.env["CI_SERVER_URL"] ?? process.env["GITLAB_URL"];
@@ -23,6 +43,23 @@ function loadConfig() {
   if (jira) {
     console.log(`[config] Jira integration enabled (${jira.url})`);
   }
+  const serenaEnabled = parseBoolean(process.env["SERENA_ENABLED"], false);
+  const serena = serenaEnabled ? {
+    command: process.env["SERENA_COMMAND"] ?? "uvx",
+    runnerArgs: parseCsv(
+      process.env["SERENA_RUNNER_ARGS"],
+      ["--from", "git+https://github.com/oraios/serena", "serena"]
+    ),
+    context: process.env["SERENA_CONTEXT"] ?? "codex",
+    tools: parseCsv(process.env["SERENA_MCP_TOOLS"], SERENA_DEFAULT_REVIEW_TOOLS),
+    projectLanguages: parseCsv(process.env["SERENA_PROJECT_LANGUAGES"], ["csharp"]),
+    initializeProject: parseBoolean(process.env["SERENA_INIT_PROJECT"], true)
+  } : void 0;
+  if (serena) {
+    console.log(
+      `[config] Serena MCP enabled (context=${serena.context}, languages=${serena.projectLanguages.join(",")})`
+    );
+  }
   return {
     gitlabUrl: gitlabUrl.replace(/\/+$/, ""),
     gitlabToken: requireEnv("GITLAB_TOKEN"),
@@ -31,7 +68,8 @@ function loadConfig() {
     copilotModel: process.env["COPILOT_MODEL"] ?? "gpt-4.1",
     copilotConfigDir: process.env["COPILOT_CONFIG_DIR"] ?? ".copilot-sessions",
     logLevel: process.env["LOG_LEVEL"] ?? "info",
-    jira
+    jira,
+    serena
   };
 }
 
@@ -414,8 +452,8 @@ async function cloneRepository(gitHttpUrl, branch, gitlabToken) {
 }
 
 // src/reviewer.ts
-import { readFile, access } from "node:fs/promises";
-import { join as join2 } from "node:path";
+import { readFile, access as access2 } from "node:fs/promises";
+import { join as join3 } from "node:path";
 import { CopilotClient, approveAll } from "@github/copilot-sdk";
 
 // src/prompts/review-system.ts
@@ -892,6 +930,57 @@ function parseReviewResponse(content) {
   }
 }
 
+// src/mcp/serena.ts
+import { access } from "node:fs/promises";
+import { join as join2 } from "node:path";
+import { execFile as execFile2 } from "node:child_process";
+import { promisify as promisify2 } from "node:util";
+var execFileAsync2 = promisify2(execFile2);
+async function ensureSerenaProjectConfig(repoDir, config) {
+  const serena = config.serena;
+  if (!serena || !serena.initializeProject) return;
+  const projectConfigPath = join2(repoDir, ".serena", "project.yml");
+  try {
+    await access(projectConfigPath);
+    return;
+  } catch {
+  }
+  const languageArgs = serena.projectLanguages.flatMap((language) => ["--language", language]);
+  console.log(
+    `[reviewer] Initializing Serena project config (.serena/project.yml) with languages: ${serena.projectLanguages.join(", ")}`
+  );
+  await execFileAsync2(
+    serena.command,
+    [...serena.runnerArgs, "project", "create", ...languageArgs],
+    {
+      cwd: repoDir,
+      timeout: 12e4
+    }
+  );
+}
+async function buildSerenaMcpServers(repoDir, config) {
+  const serena = config.serena;
+  if (!serena) return void 0;
+  await ensureSerenaProjectConfig(repoDir, config);
+  return {
+    serena: {
+      type: "stdio",
+      command: serena.command,
+      args: [
+        ...serena.runnerArgs,
+        "start-mcp-server",
+        "--context",
+        serena.context,
+        "--project",
+        repoDir,
+        "--open-web-dashboard",
+        "false"
+      ],
+      tools: serena.tools
+    }
+  };
+}
+
 // src/reviewer.ts
 function truncate(text, max) {
   if (text.length <= max) return text;
@@ -993,7 +1082,7 @@ var SKILLS_DIRS = [
 async function loadFirstFound(repoDir, candidates) {
   for (const relPath of candidates) {
     try {
-      const content = await readFile(join2(repoDir, relPath), "utf-8");
+      const content = await readFile(join3(repoDir, relPath), "utf-8");
       return { path: relPath, content: content.trim() };
     } catch {
     }
@@ -1004,8 +1093,8 @@ async function findSkillDirectories(repoDir) {
   const dirs = [];
   for (const dir of SKILLS_DIRS) {
     try {
-      await access(join2(repoDir, dir));
-      dirs.push(join2(repoDir, dir));
+      await access2(join3(repoDir, dir));
+      dirs.push(join3(repoDir, dir));
     } catch {
     }
   }
@@ -1034,7 +1123,7 @@ async function loadProjectInstructions(repoDir) {
     skillDirectories
   };
 }
-async function createOrResumeSession(client, sessionId, config, repoDir, systemPrompt, skillDirectories, tools) {
+async function createOrResumeSession(client, sessionId, config, repoDir, systemPrompt, skillDirectories, tools, mcpServers) {
   const baseSessionConfig = {
     model: config.copilotModel,
     configDir: config.copilotConfigDir,
@@ -1046,6 +1135,7 @@ async function createOrResumeSession(client, sessionId, config, repoDir, systemP
     },
     infiniteSessions: { enabled: true },
     ...tools && { tools },
+    ...mcpServers && { mcpServers },
     ...skillDirectories.length > 0 && { skillDirectories },
     hooks: buildSessionHooks(config.logLevel)
   };
@@ -1092,6 +1182,7 @@ The repository contains an \`agents.md\` file with additional instructions for A
   const jiraTool = buildJiraIssueTool(config);
   const customTools = jiraTool ? [submitReviewTool, jiraTool] : [submitReviewTool];
   try {
+    const mcpServers = await buildSerenaMcpServers(repoDir, config);
     const session = await createOrResumeSession(
       client,
       opts.sessionId,
@@ -1099,7 +1190,8 @@ The repository contains an \`agents.md\` file with additional instructions for A
       repoDir,
       systemPrompt,
       skillDirectories,
-      customTools
+      customTools,
+      mcpServers
     );
     const { detach, getUsage } = attachSessionListeners(session, config.logLevel);
     console.log(`[reviewer] Session created with model: ${config.copilotModel}`);
@@ -1177,6 +1269,7 @@ async function replyToComment(opts) {
   try {
     const jiraTool = buildJiraIssueTool(config);
     const customTools = jiraTool ? [jiraTool] : void 0;
+    const mcpServers = await buildSerenaMcpServers(repoDir, config);
     const session = await createOrResumeSession(
       client,
       opts.sessionId,
@@ -1184,7 +1277,8 @@ async function replyToComment(opts) {
       repoDir,
       systemPrompt,
       skillDirectories,
-      customTools
+      customTools,
+      mcpServers
     );
     const { detach, getUsage } = attachSessionListeners(session, config.logLevel);
     console.log(`[reviewer] Comment reply session created with model: ${config.copilotModel}`);
