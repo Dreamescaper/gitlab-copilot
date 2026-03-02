@@ -55,7 +55,7 @@ copilot-review:
     name: "$REVIEWER_IMAGE:latest"
   variables:
     COPILOT_CONFIG_DIR: "$CI_PROJECT_DIR/.copilot-sessions"
-    GIT_STRATEGY: fetch
+    GIT_STRATEGY: none
 
   cache:
     key: "copilot-sessions-$CI_PROJECT_ID"
