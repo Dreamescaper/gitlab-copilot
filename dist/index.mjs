@@ -1387,6 +1387,10 @@ async function main() {
 function buildMergeRequestSessionId(projectId, mrIid) {
   return `gitlab-mr-${projectId}-${mrIid}`;
 }
+function buildCiJobLogMessage() {
+  const ciJobUrl = process.env["CI_JOB_URL"];
+  return ciJobUrl ? `Check the [CI job log](${ciJobUrl}).` : "Check the CI job log.";
+}
 async function handleCommentReply(payload, config) {
   const projectId = payload.project.id;
   const mr = payload.merge_request;
@@ -1456,7 +1460,7 @@ async function handleCommentReply(payload, config) {
         projectId,
         mrIid,
         discussionId,
-        `\u26A0\uFE0F Failed to generate a reply. Check the CI job log.
+        `\u26A0\uFE0F Failed to generate a reply. ${buildCiJobLogMessage()}
 
 \`\`\`
 ${err instanceof Error ? err.message : String(err)}
@@ -1552,7 +1556,7 @@ _${review.comments.length} comment(s) reviewed._`;
       await gitlab.postMergeRequestNote(
         projectId,
         mrIid,
-        `\u{1F916} **Copilot Review**: Review failed with an error. Check the CI job log.
+        `\u{1F916} **Copilot Review**: Review failed with an error. ${buildCiJobLogMessage()}
 
 \`\`\`
 ${err instanceof Error ? err.message : String(err)}
