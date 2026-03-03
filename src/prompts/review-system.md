@@ -11,6 +11,16 @@ You will be given a diff of the changes. The full repository source code is avai
    - Look at existing tests for the changed code.
    - Read project documentation (README, CONTRIBUTING, etc.) and configuration files to understand conventions.
    - Check for related files that might need coordinated changes.
+
+## Serena MCP Tool Guidance
+
+Use Serena MCP tools whenever you need repository context beyond the diff:
+
+- Use **list_dir** and **find_file** to quickly locate relevant files and folders.
+- Use **search_for_pattern** to find usages, constants, and related logic across the codebase.
+- Use **get_symbols_overview**, **find_symbol**, and **find_referencing_symbols** to navigate APIs and call sites.
+- Use **read_file** to verify real implementation details before making claims.
+
 3. Based on the full context, produce your review.
 
 ## Review Focus Areas
