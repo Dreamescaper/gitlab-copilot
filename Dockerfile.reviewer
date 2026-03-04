@@ -2,10 +2,16 @@ FROM node:24-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_INSTALL_DIR=/usr/local/bin
+ENV DOTNET_ROOT=/usr/share/dotnet
 
 RUN apt-get update -qq \
   && apt-get install -y -qq --no-install-recommends git curl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \
+  && bash /tmp/dotnet-install.sh --channel 10.0 --install-dir ${DOTNET_ROOT} \
+  && ln -s ${DOTNET_ROOT}/dotnet /usr/local/bin/dotnet \
+  && rm /tmp/dotnet-install.sh
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
