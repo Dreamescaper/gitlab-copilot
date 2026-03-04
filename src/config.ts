@@ -14,6 +14,7 @@
  *   COPILOT_MODEL         – Model to use (default: gpt-4.1)
  *   COPILOT_CONFIG_DIR    – Copilot SDK config/session directory (default: .copilot-sessions)
  *   LOG_LEVEL             – Logging verbosity (default: info)
+ *   GITLAB_AUTO_ADD_REVIEWER – Auto-add bot as MR reviewer when missing (default: false)
  *
  * Optional Jira integration (all three required to enable):
  *   JIRA_URL              – Jira instance URL (e.g. https://yourteam.atlassian.net)
@@ -25,6 +26,7 @@ export interface Config {
   gitlabUrl: string;
   gitlabToken: string;
   gitlabBotUsername: string;
+  gitlabAutoAddReviewer: boolean;
   githubToken: string;
   copilotModel: string;
   copilotConfigDir: string;
@@ -42,6 +44,11 @@ function requireEnv(name: string): string {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
+}
+
+function parseBooleanEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
 export function loadConfig(): Config {
@@ -68,6 +75,7 @@ export function loadConfig(): Config {
     gitlabUrl: gitlabUrl.replace(/\/+$/, ""),
     gitlabToken: requireEnv("GITLAB_TOKEN"),
     gitlabBotUsername: requireEnv("GITLAB_BOT_USERNAME"),
+    gitlabAutoAddReviewer: parseBooleanEnv(process.env["GITLAB_AUTO_ADD_REVIEWER"]),
     githubToken: requireEnv("GITHUB_TOKEN"),
     copilotModel: process.env["COPILOT_MODEL"] ?? "gpt-4.1",
     copilotConfigDir: process.env["COPILOT_CONFIG_DIR"] ?? ".copilot-sessions",

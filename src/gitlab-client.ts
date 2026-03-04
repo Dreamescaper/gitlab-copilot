@@ -140,6 +140,34 @@ export class GitLabClient {
   // ─── Merge Request Diffs ──────────────────────────────────────────────────
 
   /**
+   * Find a GitLab user by exact username.
+   */
+  async findUserByUsername(
+    username: string,
+  ): Promise<{ id: number; username: string } | undefined> {
+    const users = await this.request<Array<{ id: number; username: string }>>(
+      "GET",
+      `/users?username=${encodeURIComponent(username)}`,
+    );
+    return users.find((u) => u.username === username);
+  }
+
+  /**
+   * Replace the MR reviewer list with the provided reviewer IDs.
+   */
+  async updateMergeRequestReviewers(
+    projectId: number,
+    mrIid: number,
+    reviewerIds: number[],
+  ): Promise<void> {
+    await this.request(
+      "PUT",
+      `/projects/${projectId}/merge_requests/${mrIid}`,
+      { reviewer_ids: reviewerIds },
+    );
+  }
+
+  /**
    * Get all diff versions for a merge request.
    */
   async getMergeRequestVersions(

@@ -11,6 +11,10 @@ function requireEnv(name) {
   }
   return value;
 }
+function parseBooleanEnv(value) {
+  if (!value) return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
 function loadConfig() {
   const gitlabUrl = process.env["CI_SERVER_URL"] ?? process.env["GITLAB_URL"];
   if (!gitlabUrl) {
@@ -27,6 +31,7 @@ function loadConfig() {
     gitlabUrl: gitlabUrl.replace(/\/+$/, ""),
     gitlabToken: requireEnv("GITLAB_TOKEN"),
     gitlabBotUsername: requireEnv("GITLAB_BOT_USERNAME"),
+    gitlabAutoAddReviewer: parseBooleanEnv(process.env["GITLAB_AUTO_ADD_REVIEWER"]),
     githubToken: requireEnv("GITHUB_TOKEN"),
     copilotModel: process.env["COPILOT_MODEL"] ?? "gpt-4.1",
     copilotConfigDir: process.env["COPILOT_CONFIG_DIR"] ?? ".copilot-sessions",
@@ -110,6 +115,26 @@ var GitLabClient = class {
     return JSON.parse(text);
   }
   // ─── Merge Request Diffs ──────────────────────────────────────────────────
+  /**
+   * Find a GitLab user by exact username.
+   */
+  async findUserByUsername(username) {
+    const users = await this.request(
+      "GET",
+      `/users?username=${encodeURIComponent(username)}`
+    );
+    return users.find((u) => u.username === username);
+  }
+  /**
+   * Replace the MR reviewer list with the provided reviewer IDs.
+   */
+  async updateMergeRequestReviewers(projectId, mrIid, reviewerIds) {
+    await this.request(
+      "PUT",
+      `/projects/${projectId}/merge_requests/${mrIid}`,
+      { reviewer_ids: reviewerIds }
+    );
+  }
   /**
    * Get all diff versions for a merge request.
    */
@@ -1366,6 +1391,48 @@ async function loadTriggerPayload() {
   const raw = await readFile5(payloadPath, "utf-8");
   return JSON.parse(raw);
 }
+async function autoAddBotReviewerIfMissing(payload, config) {
+  if (!config.gitlabAutoAddReviewer) {
+    return false;
+  }
+  const botAlreadyReviewer = payload.reviewers?.some(
+    (reviewer) => reviewer.username === config.gitlabBotUsername
+  );
+  if (botAlreadyReviewer) {
+    return false;
+  }
+  const projectId = payload.project.id;
+  const mrIid = payload.object_attributes.iid;
+  const gitlab = new GitLabClient(config);
+  try {
+    const botUser = await gitlab.findUserByUsername(config.gitlabBotUsername);
+    if (!botUser) {
+      console.warn(
+        `[review] Auto-add reviewer enabled, but user "${config.gitlabBotUsername}" was not found in GitLab.`
+      );
+      return false;
+    }
+    const existingIds = /* @__PURE__ */ new Set([
+      ...payload.object_attributes.reviewer_ids ?? [],
+      ...(payload.reviewers ?? []).map((reviewer) => reviewer.id)
+    ]);
+    if (existingIds.has(botUser.id)) {
+      return false;
+    }
+    const updatedReviewerIds = [...existingIds, botUser.id];
+    await gitlab.updateMergeRequestReviewers(projectId, mrIid, updatedReviewerIds);
+    console.log(
+      `[review] Auto-added @${config.gitlabBotUsername} as reviewer for MR !${mrIid}.`
+    );
+    return true;
+  } catch (err) {
+    console.warn(
+      `[review] Failed to auto-add reviewer @${config.gitlabBotUsername}:`,
+      err
+    );
+    return false;
+  }
+}
 async function main() {
   console.log("[review] Starting Copilot code review\u2026");
   const payload = await loadTriggerPayload();
@@ -1373,6 +1440,15 @@ async function main() {
     `[review] Received ${payload.object_kind} event`
   );
   const config = loadConfig();
+  if (payload.object_kind === "merge_request") {
+    const wasAutoAdded = await autoAddBotReviewerIfMissing(payload, config);
+    if (wasAutoAdded) {
+      console.log(
+        "[review] Reviewer assignment updated. Waiting for follow-up webhook event to run review."
+      );
+      return;
+    }
+  }
   const event = classifyWebhookEvent(payload, config.gitlabBotUsername);
   if (event.type === "ignore") {
     console.log(`[review] Event ignored: ${event.reason}`);

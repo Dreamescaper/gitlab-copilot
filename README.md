@@ -5,6 +5,7 @@ Automated code review for GitLab Merge Requests powered by **GitHub Copilot SDK*
 ## Features
 
 - **Automated MR reviews** — triggered when a bot user is added as reviewer
+- **Optional auto-assignment** — can auto-add the bot as reviewer when missing (`GITLAB_AUTO_ADD_REVIEWER=true`)
 - **Re-request support** — re-requesting a review triggers a fresh review on updated code
 - **Draft-aware** — auto-reviews when MR transitions from Draft to Ready (if bot is already a reviewer)
 - **Comment replies** — mention the bot (`@copilot-reviewer`) in any MR comment to get an AI-powered response with full thread context
@@ -138,6 +139,7 @@ In the reviewer project, go to **Settings → CI/CD → Variables** and add:
 |---|---|---|---|---|
 | `GITLAB_TOKEN` | Variable | No | ✅ | GitLab access token with `api` scope |
 | `GITLAB_BOT_USERNAME` | Variable | No | No | `copilot-reviewer` |
+| `GITLAB_AUTO_ADD_REVIEWER` | Variable | No | No | `true` to auto-add bot reviewer if missing (optional) |
 | `GITHUB_TOKEN` | Variable | No | ✅ | GitHub PAT with Copilot access |
 | `COPILOT_MODEL` | Variable | No | No | `gpt-4.1` (optional) |
 | `JIRA_URL` | Variable | No | No | `https://yourteam.atlassian.net` (optional) |
@@ -194,6 +196,7 @@ In each target project, add the service account (e.g. `copilot-reviewer`) as a m
 | `CI_SERVER_URL` | Auto | GitLab instance URL (predefined variable, automatically set) |
 | `GITLAB_TOKEN` | ✅ | Access token with `api` scope (also used for cloning) |
 | `GITLAB_BOT_USERNAME` | ✅ | Service account username |
+| `GITLAB_AUTO_ADD_REVIEWER` | | Auto-add service account as reviewer when missing (`true/false`, default: `false`) |
 | `GITHUB_TOKEN` | ✅ | GitHub PAT with Copilot access |
 | `COPILOT_MODEL` | | Model to use (default: `gpt-4.1`) |
 | `COPILOT_CONFIG_DIR` | | Copilot SDK session/config directory (default: `.copilot-sessions`) |
