@@ -1261,6 +1261,49 @@ async function replyToComment(opts) {
   }
 }
 
+// src/auto-add-reviewer.ts
+async function autoAddBotReviewerIfMissing(payload, config, gitlab) {
+  if (!config.gitlabAutoAddReviewer) {
+    return false;
+  }
+  const botAlreadyReviewer = payload.reviewers?.some(
+    (reviewer) => reviewer.username === config.gitlabBotUsername
+  );
+  if (botAlreadyReviewer) {
+    return false;
+  }
+  const projectId = payload.project.id;
+  const mrIid = payload.object_attributes.iid;
+  try {
+    const botUser = await gitlab.findUserByUsername(config.gitlabBotUsername);
+    if (!botUser) {
+      console.warn(
+        `[review] Auto-add reviewer enabled, but user "${config.gitlabBotUsername}" was not found in GitLab.`
+      );
+      return false;
+    }
+    const existingIds = /* @__PURE__ */ new Set([
+      ...payload.object_attributes.reviewer_ids ?? [],
+      ...(payload.reviewers ?? []).map((reviewer) => reviewer.id)
+    ]);
+    if (existingIds.has(botUser.id)) {
+      return false;
+    }
+    const updatedReviewerIds = [...existingIds, botUser.id];
+    await gitlab.updateMergeRequestReviewers(projectId, mrIid, updatedReviewerIds);
+    console.log(
+      `[review] Auto-added @${config.gitlabBotUsername} as reviewer for MR !${mrIid}.`
+    );
+    return true;
+  } catch (err) {
+    console.warn(
+      `[review] Failed to auto-add reviewer @${config.gitlabBotUsername}:`,
+      err
+    );
+    return false;
+  }
+}
+
 // src/webhook.ts
 function classifyWebhookEvent(payload, botUsername) {
   if (payload.object_kind === "merge_request") {
@@ -1391,48 +1434,6 @@ async function loadTriggerPayload() {
   const raw = await readFile5(payloadPath, "utf-8");
   return JSON.parse(raw);
 }
-async function autoAddBotReviewerIfMissing(payload, config) {
-  if (!config.gitlabAutoAddReviewer) {
-    return false;
-  }
-  const botAlreadyReviewer = payload.reviewers?.some(
-    (reviewer) => reviewer.username === config.gitlabBotUsername
-  );
-  if (botAlreadyReviewer) {
-    return false;
-  }
-  const projectId = payload.project.id;
-  const mrIid = payload.object_attributes.iid;
-  const gitlab = new GitLabClient(config);
-  try {
-    const botUser = await gitlab.findUserByUsername(config.gitlabBotUsername);
-    if (!botUser) {
-      console.warn(
-        `[review] Auto-add reviewer enabled, but user "${config.gitlabBotUsername}" was not found in GitLab.`
-      );
-      return false;
-    }
-    const existingIds = /* @__PURE__ */ new Set([
-      ...payload.object_attributes.reviewer_ids ?? [],
-      ...(payload.reviewers ?? []).map((reviewer) => reviewer.id)
-    ]);
-    if (existingIds.has(botUser.id)) {
-      return false;
-    }
-    const updatedReviewerIds = [...existingIds, botUser.id];
-    await gitlab.updateMergeRequestReviewers(projectId, mrIid, updatedReviewerIds);
-    console.log(
-      `[review] Auto-added @${config.gitlabBotUsername} as reviewer for MR !${mrIid}.`
-    );
-    return true;
-  } catch (err) {
-    console.warn(
-      `[review] Failed to auto-add reviewer @${config.gitlabBotUsername}:`,
-      err
-    );
-    return false;
-  }
-}
 async function main() {
   console.log("[review] Starting Copilot code review\u2026");
   const payload = await loadTriggerPayload();
@@ -1441,7 +1442,11 @@ async function main() {
   );
   const config = loadConfig();
   if (payload.object_kind === "merge_request") {
-    const wasAutoAdded = await autoAddBotReviewerIfMissing(payload, config);
+    const wasAutoAdded = await autoAddBotReviewerIfMissing(
+      payload,
+      config,
+      new GitLabClient(config)
+    );
     if (wasAutoAdded) {
       console.log(
         "[review] Reviewer assignment updated. Waiting for follow-up webhook event to run review."
