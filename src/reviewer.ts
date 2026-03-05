@@ -12,143 +12,7 @@ import { loadCommentReplySystemPrompt } from "./prompts/comment-reply-system.js"
 import { buildDiffPrompt, buildCommentReplyPrompt } from "./prompts/build-prompts.js";
 import { buildSubmitReviewTool, buildJiraIssueTool, parseReviewResponse } from "./tools.js";
 import { buildMcpServers } from "./mcp/config-loader.js";
-
-// ─── Session logging helpers ────────────────────────────────────────────────
-
-/**
- * Truncate a string to a maximum length, appending "…" if truncated.
- */
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return text.slice(0, max) + "…";
-}
-
-/**
- * Return hooks for createSession that log every tool call to the console.
- * When LOG_LEVEL=debug, tool results are logged as well (truncated).
- */
-function buildSessionHooks(logLevel: string) {
-  const isDebug = logLevel === "debug";
-  return {
-    onPreToolUse: async (input: { toolName: string; toolArgs: unknown }) => {
-      const argsStr = truncate(JSON.stringify(input.toolArgs), 300);
-      console.log(`[copilot] ▶ tool: ${input.toolName}  args: ${argsStr}`);
-      return { permissionDecision: "allow" as const };
-    },
-    onPostToolUse: async (input: { toolName: string; toolResult: unknown }) => {
-      if (isDebug) {
-        const resultStr = truncate(JSON.stringify(input.toolResult), 500);
-        console.log(`[copilot] ◀ result (${input.toolName}): ${resultStr}`);
-      }
-    },
-  };
-}
-
-/**
- * Attach session event listeners for streaming progress visibility.
- * Returns a cleanup function and accumulated usage statistics.
- */
-function attachSessionListeners(session: { on: Function }, logLevel: string): {
-  detach: () => void;
-  getUsage: () => UsageStats;
-} {
-  const isDebug = logLevel === "debug";
-  const unsubscribers: Array<() => void> = [];
-
-  // Track cumulative usage across all API calls in this session
-  const usage: UsageStats = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    totalModelMultiplier: 0,
-    requestCount: 0,
-  };
-
-  // Track usage from each assistant.usage event
-  unsubscribers.push(
-    session.on("assistant.usage", (event: {
-      data: {
-        model: string;
-        inputTokens?: number;
-        outputTokens?: number;
-        cacheReadTokens?: number;
-        cacheWriteTokens?: number;
-        quotaSnapshots?: {
-          usedRequests?: number;
-        };
-        cost?: number;
-      };
-    }) => {
-      usage.inputTokens += event.data.inputTokens ?? 0;
-      usage.outputTokens += event.data.outputTokens ?? 0;
-      usage.cacheReadTokens += event.data.cacheReadTokens ?? 0;
-      usage.cacheWriteTokens += event.data.cacheWriteTokens ?? 0;
-      usage.totalModelMultiplier += event.data.cost ?? 0;
-
-      const usedRequests = event.data.quotaSnapshots?.usedRequests;
-      if (usedRequests !== undefined) {
-        if (usage.firstUsedRequests === undefined) {
-          usage.firstUsedRequests = usedRequests;
-        }
-        usage.lastUsedRequests = usedRequests;
-      }
-
-      usage.requestCount++;
-
-      if (isDebug) {
-        console.log(
-          `[copilot] usage: +${event.data.inputTokens ?? 0} in, +${event.data.outputTokens ?? 0} out, ` +
-          `multiplier: ${event.data.cost?.toFixed(4) ?? "N/A"}, ` +
-          `quotaSnapshots.usedRequests: ${usedRequests ?? "N/A"} (model: ${event.data.model})`,
-        );
-      }
-    }),
-  );
-
-  // Log reasoning tokens (for models like o1 that expose reasoning)
-  if (isDebug) {
-    unsubscribers.push(
-      session.on("assistant.reasoning_delta", (event: { data: { deltaContent: string } }) => {
-        process.stderr.write(event.data.deltaContent);
-      }),
-    );
-  }
-
-  // Log errors
-  unsubscribers.push(
-    session.on("session.error", (event: { data: { message: string } }) => {
-      console.error(`[copilot] ✖ error: ${event.data.message}`);
-    }),
-  );
-
-  // Log idle state
-  unsubscribers.push(
-    session.on("session.idle", () => {
-      console.log(`[copilot] session idle`);
-    }),
-  );
-
-  return {
-    detach: () => {
-      for (const unsub of unsubscribers) {
-        try { unsub(); } catch { /* ignore */ }
-      }
-    },
-    getUsage: () => usage,
-  };
-}
-
-interface UsageStats {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalModelMultiplier: number;
-  requestCount: number;
-  firstUsedRequests?: number;
-  lastUsedRequests?: number;
-}
+import { attachSessionListeners, buildSessionHooks } from "./session-hooks.js";
 
 // ─── Project-specific instructions ──────────────────────────────────────────
 
@@ -292,7 +156,7 @@ async function createOrResumeSession(
     ...(tools && { tools }),
     ...(mcpServers && { mcpServers }),
     ...(skillDirectories.length > 0 && { skillDirectories }),
-    hooks: buildSessionHooks(config.logLevel),
+    hooks: buildSessionHooks(),
   };
 
   try {

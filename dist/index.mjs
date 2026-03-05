@@ -1004,30 +1004,32 @@ async function buildMcpServers(repoDir) {
   return mcpServers;
 }
 
-// src/reviewer.ts
+// src/session-hooks.ts
 function truncate2(text, max) {
   if (text.length <= max) return text;
   return text.slice(0, max) + "\u2026";
 }
-function buildSessionHooks(logLevel) {
-  const isDebug = logLevel === "debug";
+function toLogString(value) {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+function buildSessionHooks() {
   return {
     onPreToolUse: async (input) => {
       const argsStr = truncate2(JSON.stringify(input.toolArgs), 300);
       console.log(`[copilot] \u25B6 tool: ${input.toolName}  args: ${argsStr}`);
       return { permissionDecision: "allow" };
-    },
-    onPostToolUse: async (input) => {
-      if (isDebug) {
-        const resultStr = truncate2(JSON.stringify(input.toolResult), 500);
-        console.log(`[copilot] \u25C0 result (${input.toolName}): ${resultStr}`);
-      }
     }
   };
 }
 function attachSessionListeners(session, logLevel) {
   const isDebug = logLevel === "debug";
   const unsubscribers = [];
+  const activeToolCalls = /* @__PURE__ */ new Map();
   const usage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -1070,6 +1072,33 @@ function attachSessionListeners(session, logLevel) {
       console.error(`[copilot] \u2716 error: ${event.data.message}`);
     })
   );
+  if (isDebug) {
+    unsubscribers.push(
+      session.on("tool.execution_start", (event) => {
+        const startedAtMs = Date.parse(event.timestamp);
+        activeToolCalls.set(event.data.toolCallId, {
+          toolName: event.data.toolName,
+          startedAtMs: Number.isNaN(startedAtMs) ? Date.now() : startedAtMs
+        });
+      })
+    );
+    unsubscribers.push(
+      session.on("tool.execution_complete", (event) => {
+        const started = activeToolCalls.get(event.data.toolCallId);
+        if (started) {
+          activeToolCalls.delete(event.data.toolCallId);
+        }
+        const finishedAtMs = Date.parse(event.timestamp);
+        const finished = Number.isNaN(finishedAtMs) ? Date.now() : finishedAtMs;
+        const elapsedMs = started ? Math.max(0, finished - started.startedAtMs) : void 0;
+        const toolName = started?.toolName ?? `toolCall:${event.data.toolCallId}`;
+        const timing = elapsedMs !== void 0 ? `, ${elapsedMs}ms` : "";
+        const resultPayload = event.data.success ? event.data.result : event.data.error?.message ?? event.data.result ?? "Tool execution failed";
+        const resultStr = truncate2(toLogString(resultPayload), 500);
+        console.log(`[copilot] \u25C0 result (${toolName}${timing}): ${resultStr}`);
+      })
+    );
+  }
   unsubscribers.push(
     session.on("session.idle", () => {
       console.log(`[copilot] session idle`);
@@ -1083,10 +1112,13 @@ function attachSessionListeners(session, logLevel) {
         } catch {
         }
       }
+      activeToolCalls.clear();
     },
     getUsage: () => usage
   };
 }
+
+// src/reviewer.ts
 var COPILOT_INSTRUCTIONS_PATHS = [
   ".github/copilot-instructions.md",
   ".gitlab/copilot-instructions.md",
@@ -1160,7 +1192,7 @@ async function createOrResumeSession(client, sessionId, config, repoDir, systemP
     ...tools && { tools },
     ...mcpServers && { mcpServers },
     ...skillDirectories.length > 0 && { skillDirectories },
-    hooks: buildSessionHooks(config.logLevel)
+    hooks: buildSessionHooks()
   };
   try {
     const resumed = await client.resumeSession(sessionId, baseSessionConfig);
