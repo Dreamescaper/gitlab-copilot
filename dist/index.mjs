@@ -1158,7 +1158,7 @@ The repository contains an \`agents.md\` file with additional instructions for A
     );
     const response = await session.sendAndWait({
       prompt: userPrompt
-    }, 3e5);
+    }, 6e5);
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got response (${responseContent.length} chars)`);
     const usage = getUsage();
@@ -1241,7 +1241,7 @@ async function replyToComment(opts) {
     );
     const response = await session.sendAndWait({
       prompt
-    }, 3e5);
+    }, 6e5);
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got reply (${responseContent.length} chars)`);
     const usage = getUsage();

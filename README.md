@@ -211,6 +211,7 @@ For CI session persistence across pipeline runs, cache the configured `COPILOT_C
 
 - `build-reviewer-image` stage (push/manual): builds and pushes `reviewer:<sha>` and `reviewer:latest`.
 - `copilot-review` stage (trigger): uses the prebuilt `reviewer:latest` image and runs `node /opt/reviewer/dist/index.mjs`.
+- `copilot-review` job timeout: `15m`.
 - Review pipelines use `GIT_STRATEGY=fetch` so runtime prompt files are available from the repository checkout.
 
 ## MCP Configuration (`mcp.json`)

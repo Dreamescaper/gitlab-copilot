@@ -78,7 +78,7 @@ copilot-review:
   script:
     - node /opt/reviewer/dist/index.mjs
 
-  timeout: 10m
+  timeout: 15m
 
   # Allow the job to fail without blocking other pipelines
   allow_failure: true

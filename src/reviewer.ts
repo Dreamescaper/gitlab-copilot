@@ -394,7 +394,7 @@ export async function reviewMergeRequest(
 
     const response = await session.sendAndWait({
       prompt: userPrompt
-    }, 300000);
+    }, 600000);
 
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got response (${responseContent.length} chars)`);
@@ -529,7 +529,7 @@ export async function replyToComment(
 
     const response = await session.sendAndWait({
       prompt,
-    }, 300000);
+    }, 600000);
 
     const responseContent = response?.data?.content ?? "";
     console.log(`[reviewer] Got reply (${responseContent.length} chars)`);
