@@ -33,6 +33,7 @@ import { autoAddBotReviewerIfMissing } from "./auto-add-reviewer.js";
 
 import { classifyWebhookEvent } from "./webhook.js";
 import type {
+  MergeRequestCommentContext,
   MergeRequestWebhookPayload,
   NoteWebhookPayload,
   WebhookPayload,
@@ -271,6 +272,16 @@ async function handleMergeRequestReview(
       return;
     }
 
+    // ─── Fetch existing MR comments/discussions for re-review context ─────
+    let mrComments: MergeRequestCommentContext[] = [];
+    try {
+      console.log("[review] Fetching MR comment context…");
+      mrComments = await gitlab.getMergeRequestCommentContext(projectId, mrIid);
+      console.log(`[review] Got ${mrComments.length} comment message(s) for context`);
+    } catch (err) {
+      console.warn("[review] Could not fetch MR comment context, continuing without it", err);
+    }
+
     // ─── Run review ───────────────────────────────────────────────────
     console.log("[review] Running Copilot review…");
     const review = await reviewMergeRequest({
@@ -283,6 +294,7 @@ async function handleMergeRequestReview(
       sourceBranch,
       targetBranch,
       diffVersion,
+      mrComments,
     });
     console.log(
       `[review] Review complete: ${review.comments.length} comment(s)`,

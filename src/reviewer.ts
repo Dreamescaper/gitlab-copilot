@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { CopilotClient, approveAll } from "@github/copilot-sdk";
 import type { Config } from "./config.js";
 import type {
+  MergeRequestCommentContext,
   MergeRequestDiffVersionDetail,
   ReviewResult,
 } from "./types.js";
@@ -265,6 +266,7 @@ export interface ReviewOptions {
   sourceBranch: string;
   targetBranch: string;
   diffVersion: MergeRequestDiffVersionDetail;
+  mrComments?: MergeRequestCommentContext[];
 }
 
 async function createOrResumeSession(
@@ -379,6 +381,7 @@ export async function reviewMergeRequest(
       opts.sourceBranch,
       opts.targetBranch,
       diffVersion.diffs,
+      opts.mrComments,
     );
 
     console.log(

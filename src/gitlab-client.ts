@@ -5,6 +5,7 @@ import type {
   DiffFile,
   DiffPosition,
   ReviewComment,
+  MergeRequestCommentContext,
 } from "./types.js";
 
 // ─── Diff line parser ───────────────────────────────────────────────────────
@@ -282,6 +283,87 @@ export class GitLabClient {
       "GET",
       `/projects/${projectId}/merge_requests/${mrIid}/notes`,
     );
+  }
+
+  /**
+   * Get chronological MR comment history for prompt context.
+   * Includes both discussion notes and regular MR notes.
+   */
+  async getMergeRequestCommentContext(
+    projectId: number,
+    mrIid: number,
+  ): Promise<MergeRequestCommentContext[]> {
+    const [discussions, notes] = await Promise.all([
+      this.request<Array<{
+        id: string;
+        notes: Array<{
+          body: string;
+          created_at: string;
+          system?: boolean;
+          author?: { username?: string; name?: string };
+          position?: {
+            new_path?: string;
+            old_path?: string;
+            new_line?: number | null;
+            old_line?: number | null;
+          };
+        }>;
+      }>>(
+        "GET",
+        `/projects/${projectId}/merge_requests/${mrIid}/discussions`,
+      ),
+      this.request<Array<{
+        body: string;
+        created_at: string;
+        system?: boolean;
+        author?: { username?: string; name?: string };
+        position?: {
+          new_path?: string;
+          old_path?: string;
+          new_line?: number | null;
+          old_line?: number | null;
+        };
+      }>>(
+        "GET",
+        `/projects/${projectId}/merge_requests/${mrIid}/notes`,
+      ),
+    ]);
+
+    const discussionEntries: MergeRequestCommentContext[] = discussions.flatMap(
+      (discussion) =>
+        discussion.notes
+        .filter((note) => !note.system && note.body.trim().length > 0)
+        .map((note) => ({
+          source: "discussion",
+          author: note.author?.username ?? note.author?.name ?? "unknown",
+          body: note.body,
+          createdAt: note.created_at,
+          filePath: note.position?.new_path ?? note.position?.old_path,
+          lineNumber: note.position?.new_line ?? note.position?.old_line ?? undefined,
+        })),
+    );
+
+    const noteEntries: MergeRequestCommentContext[] = notes
+      .filter((note) => !note.system && note.body.trim().length > 0)
+      .map((note) => ({
+        source: "note",
+        author: note.author?.username ?? note.author?.name ?? "unknown",
+        body: note.body,
+        createdAt: note.created_at,
+        filePath: note.position?.new_path ?? note.position?.old_path,
+        lineNumber: note.position?.new_line ?? note.position?.old_line ?? undefined,
+      }));
+
+    const deduped = new Map<string, MergeRequestCommentContext>();
+    for (const entry of [...discussionEntries, ...noteEntries]) {
+      const key = `${entry.createdAt}|${entry.author}|${entry.body}`;
+      if (!deduped.has(key)) {
+        deduped.set(key, entry);
+      }
+    }
+
+    return [...deduped.values()]
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   }
 
   /**

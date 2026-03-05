@@ -7,6 +7,7 @@ Automated code review for GitLab Merge Requests powered by **GitHub Copilot SDK*
 - **Automated MR reviews** — triggered when a bot user is added as reviewer
 - **Optional auto-assignment** — can auto-add the bot as reviewer when missing (`GITLAB_AUTO_ADD_REVIEWER=true`)
 - **Re-request support** — re-requesting a review triggers a fresh review on updated code
+- **Review thread awareness** — full MR reviews include existing MR comment threads (with author replies) as context
 - **Draft-aware** — auto-reviews when MR transitions from Draft to Ready (if bot is already a reviewer)
 - **Comment replies** — mention the bot (`@copilot-reviewer`) in any MR comment to get an AI-powered response with full thread context
 - **Code suggestions** — inline suggestions using GitLab's Apply Suggestion UI (single-line and multi-line ranges)

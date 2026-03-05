@@ -213,6 +213,48 @@ var GitLabClient = class {
     );
   }
   /**
+   * Get chronological MR comment history for prompt context.
+   * Includes both discussion notes and regular MR notes.
+   */
+  async getMergeRequestCommentContext(projectId, mrIid) {
+    const [discussions, notes] = await Promise.all([
+      this.request(
+        "GET",
+        `/projects/${projectId}/merge_requests/${mrIid}/discussions`
+      ),
+      this.request(
+        "GET",
+        `/projects/${projectId}/merge_requests/${mrIid}/notes`
+      )
+    ]);
+    const discussionEntries = discussions.flatMap(
+      (discussion) => discussion.notes.filter((note) => !note.system && note.body.trim().length > 0).map((note) => ({
+        source: "discussion",
+        author: note.author?.username ?? note.author?.name ?? "unknown",
+        body: note.body,
+        createdAt: note.created_at,
+        filePath: note.position?.new_path ?? note.position?.old_path,
+        lineNumber: note.position?.new_line ?? note.position?.old_line ?? void 0
+      }))
+    );
+    const noteEntries = notes.filter((note) => !note.system && note.body.trim().length > 0).map((note) => ({
+      source: "note",
+      author: note.author?.username ?? note.author?.name ?? "unknown",
+      body: note.body,
+      createdAt: note.created_at,
+      filePath: note.position?.new_path ?? note.position?.old_path,
+      lineNumber: note.position?.new_line ?? note.position?.old_line ?? void 0
+    }));
+    const deduped = /* @__PURE__ */ new Map();
+    for (const entry of [...discussionEntries, ...noteEntries]) {
+      const key = `${entry.createdAt}|${entry.author}|${entry.body}`;
+      if (!deduped.has(key)) {
+        deduped.set(key, entry);
+      }
+    }
+    return [...deduped.values()].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  }
+  /**
    * Post an inline discussion (diff comment) on a merge request.
    */
   async postDiffDiscussion(projectId, mrIid, body, position) {
@@ -490,7 +532,41 @@ async function loadCommentReplySystemPrompt() {
 }
 
 // src/prompts/build-prompts.ts
-function buildDiffPrompt(mrTitle, mrDescription, mrUrl, sourceBranch, targetBranch, diffs) {
+var REVIEW_CONTEXT_COMMENT_LIMIT = 30;
+var REVIEW_CONTEXT_COMMENT_BODY_LIMIT = 500;
+function truncate(text, maxLength) {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}\u2026`;
+}
+function normalizeWhitespace(text) {
+  return text.replace(/\s+/g, " ").trim();
+}
+function buildMrCommentsSection(mrComments) {
+  if (!mrComments || mrComments.length === 0) {
+    return "";
+  }
+  const recent = mrComments.slice(-REVIEW_CONTEXT_COMMENT_LIMIT);
+  const entries = recent.map((comment) => {
+    const location = comment.filePath ? `, ${comment.filePath}${comment.lineNumber ? `:${comment.lineNumber}` : ""}` : "";
+    const body = truncate(
+      normalizeWhitespace(comment.body),
+      REVIEW_CONTEXT_COMMENT_BODY_LIMIT
+    );
+    return `- **${comment.author}** (${comment.createdAt}, ${comment.source}${location})
+  ${body}`;
+  }).join("\n");
+  const truncatedNote = mrComments.length > recent.length ? `
+
+> Showing the latest ${recent.length} of ${mrComments.length} MR comment message(s).` : "";
+  return `## Existing MR Comment Context
+${"Use this history to avoid repeating already-addressed findings and to incorporate author clarifications/replies."}
+
+
+${entries}${truncatedNote}
+
+`;
+}
+function buildDiffPrompt(mrTitle, mrDescription, mrUrl, sourceBranch, targetBranch, diffs, mrComments) {
   const filesDiff = diffs.filter((d) => !d.too_large && !d.collapsed).map((d) => {
     const status = d.new_file ? "(new file)" : d.deleted_file ? "(deleted)" : d.renamed_file ? `(renamed from ${d.old_path})` : "";
     return `### ${d.new_path} ${status}
@@ -502,6 +578,7 @@ ${d.diff}
   const skippedNote = skipped.length > 0 ? `
 
 > **Note**: ${skipped.length} file(s) were too large to include in the diff. You can read them directly from the working directory: ${skipped.map((d) => d.new_path).join(", ")}` : "";
+  const mrCommentsSection = buildMrCommentsSection(mrComments);
   return `# Merge Request: ${mrTitle}
 **Branch**: \`${sourceBranch}\` \u2192 \`${targetBranch}\`
 **URL**: ${mrUrl}
@@ -509,7 +586,7 @@ ${d.diff}
 ## Description
 ${mrDescription || "(no description)"}
 
-## Changed Files (${diffs.length} file(s))
+${mrCommentsSection}## Changed Files (${diffs.length} file(s))
 
 ${filesDiff}${skippedNote}
 
@@ -928,7 +1005,7 @@ async function buildMcpServers(repoDir) {
 }
 
 // src/reviewer.ts
-function truncate(text, max) {
+function truncate2(text, max) {
   if (text.length <= max) return text;
   return text.slice(0, max) + "\u2026";
 }
@@ -936,13 +1013,13 @@ function buildSessionHooks(logLevel) {
   const isDebug = logLevel === "debug";
   return {
     onPreToolUse: async (input) => {
-      const argsStr = truncate(JSON.stringify(input.toolArgs), 300);
+      const argsStr = truncate2(JSON.stringify(input.toolArgs), 300);
       console.log(`[copilot] \u25B6 tool: ${input.toolName}  args: ${argsStr}`);
       return { permissionDecision: "allow" };
     },
     onPostToolUse: async (input) => {
       if (isDebug) {
-        const resultStr = truncate(JSON.stringify(input.toolResult), 500);
+        const resultStr = truncate2(JSON.stringify(input.toolResult), 500);
         console.log(`[copilot] \u25C0 result (${input.toolName}): ${resultStr}`);
       }
     }
@@ -1147,7 +1224,8 @@ The repository contains an \`agents.md\` file with additional instructions for A
       opts.mrUrl,
       opts.sourceBranch,
       opts.targetBranch,
-      diffVersion.diffs
+      diffVersion.diffs,
+      opts.mrComments
     );
     console.log(
       `[reviewer] Sending ${diffVersion.diffs.length} file(s) for review (prompt length: ${userPrompt.length} chars, workingDir: ${repoDir})`
@@ -1596,6 +1674,14 @@ async function handleMergeRequestReview(payload, config) {
       console.log("[review] No diffs to review.");
       return;
     }
+    let mrComments = [];
+    try {
+      console.log("[review] Fetching MR comment context\u2026");
+      mrComments = await gitlab.getMergeRequestCommentContext(projectId, mrIid);
+      console.log(`[review] Got ${mrComments.length} comment message(s) for context`);
+    } catch (err) {
+      console.warn("[review] Could not fetch MR comment context, continuing without it", err);
+    }
     console.log("[review] Running Copilot review\u2026");
     const review = await reviewMergeRequest({
       config,
@@ -1606,7 +1692,8 @@ async function handleMergeRequestReview(payload, config) {
       mrUrl,
       sourceBranch,
       targetBranch,
-      diffVersion
+      diffVersion,
+      mrComments
     });
     console.log(
       `[review] Review complete: ${review.comments.length} comment(s)`

@@ -180,6 +180,17 @@ export interface MergeRequestDiffVersionDetail extends MergeRequestDiffVersion {
   commits: GitLabCommit[];
 }
 
+// ─── Review Context Types ──────────────────────────────────────────────────
+
+export interface MergeRequestCommentContext {
+  source: "discussion" | "note";
+  author: string;
+  body: string;
+  createdAt: string;
+  filePath?: string;
+  lineNumber?: number;
+}
+
 // ─── Review Types ───────────────────────────────────────────────────────────
 
 export interface ReviewComment {
