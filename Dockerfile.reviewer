@@ -19,8 +19,3 @@ WORKDIR /opt/reviewer
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --silent 2>&1 | tail -1
-
-COPY dist ./dist
-COPY mcp.json ./mcp.json
-
-CMD ["node", "dist/index.mjs"]

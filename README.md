@@ -103,9 +103,13 @@ https://gitlab.example.com/api/v4/projects/<reviewer_project_id>/ref/main/trigge
 
 ### 0. Build Reviewer Runtime Image (one-time bootstrap)
 
-The review job now runs from a prebuilt container image (`$CI_REGISTRY_IMAGE/reviewer:latest`) that already contains Node, git, uv, production dependencies, `dist/`, and `mcp.json`.
+The review job now runs from a prebuilt container image (`$CI_REGISTRY_IMAGE/reviewer:latest`) that contains Node, git, uv, and production npm dependencies only.
 
-- On normal `push` pipelines, `.gitlab-ci.yml` builds and pushes this image automatically.
+The job executes `dist/index.mjs` and loads `mcp.json` from the repository checkout at runtime.
+
+- On `push` pipelines, `.gitlab-ci.yml` rebuilds and pushes this image automatically only when `Dockerfile.reviewer` changes.
+- You can still run `build-reviewer-image` manually whenever you want to refresh the image, including after dependency changes.
+- If `package.json` or `package-lock.json` changes, manually run `build-reviewer-image` so the image picks up the new runtime dependencies.
 - Triggered webhook pipelines (the fast review path) skip image build and use the latest pushed image.
 
 If this is a fresh project, run one push pipeline (or manually run `build-reviewer-image`) before the first webhook-triggered review.
@@ -210,8 +214,8 @@ For CI session persistence across pipeline runs, cache the configured `COPILOT_C
 
 ## CI Pipeline Model
 
-- `build-reviewer-image` stage (push/manual): builds and pushes `reviewer:<sha>` and `reviewer:latest`.
-- `copilot-review` stage (trigger): uses the prebuilt `reviewer:latest` image and runs `node /opt/reviewer/dist/index.mjs`.
+- `build-reviewer-image` stage: builds and pushes `reviewer:<sha>` and `reviewer:latest`; runs automatically only when `Dockerfile.reviewer` changes, and can also be started manually.
+- `copilot-review` stage (trigger): uses the prebuilt `reviewer:latest` image, links its baked-in `node_modules` into the checked-out repo, and runs `node dist/index.mjs` from the repository checkout.
 - `copilot-review` job timeout: `15m`.
 - Review pipelines use `GIT_STRATEGY=fetch` so runtime prompt files are available from the repository checkout.
 
