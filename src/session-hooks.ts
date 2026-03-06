@@ -58,6 +58,7 @@ export function attachSessionListeners(session: { on: Function }, logLevel: stri
   const isDebug = logLevel === "debug";
   const unsubscribers: Array<() => void> = [];
   const activeToolCalls = new Map<string, { toolName: string; startedAtMs: number }>();
+  let wroteAssistantMessageDelta = false;
 
   const usage: UsageStats = {
     inputTokens: 0,
@@ -112,6 +113,22 @@ export function attachSessionListeners(session: { on: Function }, logLevel: stri
     unsubscribers.push(
       session.on("assistant.reasoning_delta", (event: { data: { deltaContent: string } }) => {
         process.stderr.write(event.data.deltaContent);
+      }),
+    );
+
+    unsubscribers.push(
+      session.on("assistant.message_delta", (event: { data: { deltaContent: string } }) => {
+        wroteAssistantMessageDelta = true;
+        process.stdout.write(event.data.deltaContent);
+      }),
+    );
+
+    unsubscribers.push(
+      session.on("assistant.turn_end", () => {
+        if (wroteAssistantMessageDelta) {
+          process.stdout.write("\n");
+          wroteAssistantMessageDelta = false;
+        }
       }),
     );
   }
